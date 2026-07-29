@@ -11,6 +11,7 @@ import {
   toLocationContext,
   type ChannelInboundMediaInput,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   ensureConfiguredBindingRouteReady,
@@ -27,6 +28,10 @@ import { normalizeAllowFrom } from "./bot-access.js";
 import { resolveLineGroupConfigEntry } from "./group-keys.js";
 import type { ResolvedLineAccount } from "./types.js";
 
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
+
 type EventSource = webhook.Source | undefined;
 type MessageEvent = webhook.MessageEvent;
 type PostbackEvent = webhook.PostbackEvent;
@@ -38,6 +43,7 @@ interface MediaRef {
 }
 
 interface BuildLineMessageContextParams {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   event: MessageEvent;
   allMedia: MediaRef[];
   mediaUnavailable?: boolean;
@@ -472,6 +478,7 @@ export async function buildLineMessageContext(params: BuildLineMessageContextPar
   });
 
   return {
+    memorySubjectCapability: params.memorySubjectCapability,
     ctxPayload: finalized.ctxPayload,
     turn: finalized.turn,
     event,
@@ -486,6 +493,7 @@ export async function buildLineMessageContext(params: BuildLineMessageContextPar
 }
 
 export async function buildLinePostbackContext(params: {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   event: PostbackEvent;
   cfg: OpenClawConfig;
   account: ResolvedLineAccount;
@@ -529,6 +537,7 @@ export async function buildLinePostbackContext(params: {
   });
 
   return {
+    memorySubjectCapability: params.memorySubjectCapability,
     ctxPayload: finalized.ctxPayload,
     turn: finalized.turn,
     event,

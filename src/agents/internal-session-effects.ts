@@ -4,6 +4,8 @@ import {
   applySessionEntryLifecycleMutation,
   forkSessionFromParentTranscript,
   loadExactSessionEntry,
+  prepareAmbiguousSessionMemorySubjectSeed,
+  prepareExplicitSessionMemorySubjectSeed,
   replaceTranscriptEvents,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
@@ -95,17 +97,30 @@ export async function prepareInternalSessionEffectsSession(params: {
       createSessionTranscriptHeader({ cwd: params.cwd, sessionId: scope.sessionId }),
     ]);
   }
+  const memorySubjectSeed =
+    fork?.status === "created"
+      ? fork.transcript.memorySubjectSeed
+      : params.source
+        ? prepareAmbiguousSessionMemorySubjectSeed("unbound")
+        : prepareExplicitSessionMemorySubjectSeed({
+            kind: "system",
+            stableSubjectId: `internal-session-effects:${params.agentId}`,
+          });
   const now = Date.now();
-  const entry = await upsertSessionEntry(scope, {
-    ...buildSessionCreationStamp({ via: "internal", actor: { type: "system" } }),
-    delivery: { kind: "internal" },
-    sessionId: scope.sessionId,
-    ...(isIncognitoOpenClawAgentSqlitePath(params.storePath, { agentId: params.agentId })
-      ? { incognito: true as const }
-      : {}),
-    sessionStartedAt: now,
-    updatedAt: now,
-  });
+  const entry = await upsertSessionEntry(
+    scope,
+    {
+      ...buildSessionCreationStamp({ via: "internal", actor: { type: "system" } }),
+      delivery: { kind: "internal" },
+      sessionId: scope.sessionId,
+      ...(isIncognitoOpenClawAgentSqlitePath(params.storePath, { agentId: params.agentId })
+        ? { incognito: true as const }
+        : {}),
+      sessionStartedAt: now,
+      updatedAt: now,
+    },
+    { memorySubjectSeed },
+  );
   if (!entry) {
     throw new Error(`Failed to create internal SQLite session for run ${params.runId}`);
   }

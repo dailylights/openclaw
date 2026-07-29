@@ -432,6 +432,7 @@ async function processMessageWithPipeline(params: {
         accountId: route.accountId,
         route: { agentId: route.agentId, sessionKey: route.sessionKey },
         ctxPayload,
+        memorySubjectCapability: access.memorySubjectCapability,
         delivery: {
           durable: (payload, info) =>
             resolveGoogleChatDurableReplyOptions({

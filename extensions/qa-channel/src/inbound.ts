@@ -415,6 +415,7 @@ export async function handleQaInbound(params: {
     accountId: params.account.accountId,
     route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
     ctxPayload,
+    memorySubjectCapability: access.memorySubjectCapability,
     delivery: {
       deliver: async (payload, info) => {
         const reply =

@@ -1,5 +1,8 @@
 // Qqbot plugin module implements inbound context behavior.
-import type { ChannelIngressDecision } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import type {
+  ChannelIngressDecision,
+  ResolvedChannelMessageIngress,
+} from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { EngineAdapters } from "../adapter/index.js";
 import type { QQBotGroupCommandLevel } from "../config/group.js";
@@ -9,6 +12,10 @@ import type { GroupMessageGateResult } from "../group/message-gating.js";
 import type { QueuedMessage } from "./message-queue.js";
 import type { GatewayAccount, EngineLogger, GatewayPluginRuntime } from "./types.js";
 import type { TypingKeepAlive } from "./typing-keepalive.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 export interface ReplyToInfo {
   id: string;
@@ -33,6 +40,7 @@ export interface InboundGroupInfo {
 }
 
 export interface InboundContext {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   event: QueuedMessage;
   route: {
     sessionKey: string;

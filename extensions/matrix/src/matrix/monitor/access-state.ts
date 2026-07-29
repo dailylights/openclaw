@@ -13,6 +13,7 @@ type MatrixMonitorAccessState = {
   accountId: string;
   senderId: string;
   isRoom: boolean;
+  conversationId: string;
 };
 
 function normalizeMatrixEntry(raw?: string | null): string | null {
@@ -60,6 +61,7 @@ export async function resolveMatrixMonitorAccessState(params: {
   roomUsers: Array<string | number>;
   senderId: string;
   isRoom: boolean;
+  conversationId?: string;
   accountId?: string;
   eventKind?: "message" | "reaction";
 }): Promise<MatrixMonitorAccessState> {
@@ -74,6 +76,8 @@ export async function resolveMatrixMonitorAccessState(params: {
   });
   const accountId = params.accountId ?? "default";
   const eventKind = params.eventKind ?? "message";
+  const conversationId =
+    params.conversationId?.trim() || (params.isRoom ? "matrix-room" : "matrix-dm");
   const ingress = createChannelIngressResolver({
     channelId: "matrix",
     accountId,
@@ -84,7 +88,7 @@ export async function resolveMatrixMonitorAccessState(params: {
     subject: { stableId: params.senderId },
     conversation: {
       kind: params.isRoom ? "group" : "direct",
-      id: params.isRoom ? "matrix-room" : "matrix-dm",
+      id: conversationId,
     },
     event: {
       kind: eventKind,
@@ -105,6 +109,7 @@ export async function resolveMatrixMonitorAccessState(params: {
     accountId,
     senderId: params.senderId,
     isRoom: params.isRoom,
+    conversationId,
   };
 }
 
@@ -127,7 +132,7 @@ export async function resolveMatrixMonitorCommandAccess(
     subject: { stableId: state.senderId },
     conversation: {
       kind: state.isRoom ? "group" : "direct",
-      id: state.isRoom ? "matrix-room" : "matrix-dm",
+      id: state.conversationId,
     },
     dmPolicy: "allowlist",
     groupPolicy: "allowlist",

@@ -6,11 +6,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
+  prepareExplicitSessionMemorySubjectSeed,
+  readCurrentSessionMemorySubject,
   replaceSessionEntry,
+  upsertSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { replaceSqliteTranscriptEvents } from "../../config/sessions/session-accessor.sqlite.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   forkSessionEntryFromParent,
   forkSessionFromParent,
@@ -27,6 +31,7 @@ function makeRoot(prefix: string): string {
 }
 
 afterEach(() => {
+  closeOpenClawStateDatabaseForTest();
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -237,7 +242,12 @@ describe("forkSessionEntryFromParent", () => {
     const storePath = path.join(root, "sessions.json");
     const parentSessionKey = "agent:main:main";
     const sessionKey = "agent:main:subagent:child";
-    await replaceSessionEntry(
+    const parentSeed = prepareExplicitSessionMemorySubjectSeed({
+      kind: "agent",
+      stableSubjectId: "large-parent-agent",
+      options: { path: path.join(root, "state.sqlite") },
+    });
+    await upsertSessionEntry(
       {
         agentId: "main",
         sessionKey: parentSessionKey,
@@ -250,6 +260,7 @@ describe("forkSessionEntryFromParent", () => {
         totalTokensVersion: 1 as const,
         updatedAt: 1,
       },
+      { memorySubjectSeed: parentSeed },
     );
 
     const result = await forkSessionEntryFromParent({
@@ -278,6 +289,28 @@ describe("forkSessionEntryFromParent", () => {
     expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toMatchObject({
       forkedFromParent: true,
       sessionId: "",
+    });
+    const parentSubject = readCurrentSessionMemorySubject({
+      agentId: "main",
+      sessionKey: parentSessionKey,
+      storePath,
+    });
+    const childSubject = readCurrentSessionMemorySubject({
+      agentId: "main",
+      sessionKey,
+      storePath,
+    });
+    expect(childSubject).toBeUndefined();
+
+    await upsertSessionEntry(
+      { agentId: "main", sessionKey, storePath },
+      { sessionId: "materialized-child", updatedAt: 4 },
+    );
+    expect(
+      readCurrentSessionMemorySubject({ agentId: "main", sessionKey, storePath }),
+    ).toMatchObject({
+      subject: parentSubject?.subject,
+      subjectRevision: parentSubject?.subjectRevision,
     });
   });
 

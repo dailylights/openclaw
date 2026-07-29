@@ -44,6 +44,12 @@ import {
 import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
+  persistSessionMemorySubjectInTransaction,
+  rehomeSessionMemorySubjectAliases,
+  tryRehomeSessionMemorySubjectSnapshot,
+  type TrustedSessionMemorySubjectSeed,
+} from "./session-memory-subject.js";
+import {
   collectSessionEntryLookupKeys,
   resolveDeliveryProvenCanonicalSessionKey,
 } from "./store-entry.js";
@@ -375,7 +381,15 @@ export function deleteSqliteSessionEntryRows(
         ? collectSqliteSessionStateIdsForEntry(entry).includes(window.session_id)
         : false;
     });
-    if (survivingNode) {
+    if (
+      survivingNode &&
+      tryRehomeSessionMemorySubjectSnapshot({
+        database,
+        sessionId: window.session_id,
+        sourceSessionKey: sessionKey,
+        targetSessionKey: survivingNode.session_key,
+      })
+    ) {
       executeSqliteQuerySync(
         database.db,
         db
@@ -538,6 +552,9 @@ export function deleteLegacySessionEntryRows(
   if (legacyKeys.length === 0) {
     return;
   }
+  // Subject snapshots reference the logical key independently from session windows.
+  // Rehome them before alias-node deletion can cascade immutable provenance away.
+  rehomeSessionMemorySubjectAliases(database, sessionKey, legacyKeys);
   const db = getSessionKysely(database.db);
   for (const legacyKey of legacyKeys) {
     if (legacyKey === sessionKey) {
@@ -583,6 +600,8 @@ export function writeSessionEntry(
     allowStoredAliases?: boolean;
     preserveNodeSuggestions?: boolean;
     previousEntry?: SessionEntry | null;
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
+    memorySubjectAliasSourceKeys?: Iterable<string>;
   } = {},
 ): void {
   const db = getSessionKysely(database.db);
@@ -740,6 +759,17 @@ export function writeSessionEntry(
       updatedAt,
     });
   }
+  persistSessionMemorySubjectInTransaction({
+    database,
+    sessionKey,
+    sessionId: sessionRow.session_id,
+    sessionScope: boundSessionRoot.session_scope,
+    ...(options.memorySubjectSeed ? { seed: options.memorySubjectSeed } : {}),
+    ...(options.memorySubjectAliasSourceKeys
+      ? { aliasSourceSessionKeys: options.memorySubjectAliasSourceKeys }
+      : {}),
+    now: updatedAt,
+  });
   publishSqliteSessionEntryCacheInvalidation(database, sessionNode);
 }
 

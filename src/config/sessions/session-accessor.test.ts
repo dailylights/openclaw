@@ -1532,7 +1532,7 @@ describe("session accessor seam", () => {
           removals: [{ sessionKey }],
           storePath,
         });
-        return sessionEntry;
+        return { sessionEntry };
       },
       sessionEntry: {
         sessionId: "stale-session",

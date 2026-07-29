@@ -631,6 +631,7 @@ async function processMessage(
     cfg: config,
     route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
     ctxPayload,
+    memorySubjectCapability: accessDecision.memorySubjectCapability,
     delivery: {
       preparePayload: (payload) => {
         if (payload.text === undefined) {

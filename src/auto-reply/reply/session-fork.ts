@@ -110,7 +110,7 @@ export async function resolveParentForkDecision(
 
 export async function forkSessionFromParent(
   params: ForkSessionFromParentParams,
-): Promise<{ sessionId: string; sessionFile: string } | null> {
+): Promise<ParentForkedSessionTranscript | null> {
   // Keep direct callers fail-closed even if they skipped the normal decision step.
   assertParentSessionForkAllowed(params.parentEntry);
   const storePath = resolveParentForkStorePath(params);

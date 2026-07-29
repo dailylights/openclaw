@@ -14,6 +14,7 @@ import type {
 import {
   deleteLegacySessionEntryRows,
   normalizeSqliteLifecycleTarget,
+  readSessionEntryRow,
   readSqliteSessionIdentitySnapshot,
   rehomeSqliteSessionWindows,
   resolveSqliteLifecyclePrimaryEntry,
@@ -49,9 +50,20 @@ import {
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
+import { prepareCurrentSessionMemorySubjectLineageSeedInTransaction } from "./session-memory-subject.js";
+import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
 import { mergeSessionEntry, resolveFreshSessionTotalTokens } from "./types.js";
 
 // Parent-session fork owner: decision, transcript copy, and child entry commit.
+
+type CapturedCrossDatabaseParentFork =
+  | {
+      status: "created";
+      memorySubjectSeed: TrustedSessionMemorySubjectSeed;
+      parentSessionFile: string;
+      source: SqliteParentForkSourceTranscript;
+    }
+  | Extract<ForkSessionFromParentTranscriptResult, { status: "failed" | "missing-parent" }>;
 
 export async function forkSqliteSessionTranscriptFromParent(
   params: ForkSessionFromParentTranscriptParams,
@@ -85,21 +97,44 @@ export async function forkSqliteSessionTranscriptFromParent(
   // the target agent's database. Two databases cannot share one transaction,
   // so read the parent branch first, then write the child under the target's
   // exclusive session write lock.
-  if (!params.parentEntry.sessionId) {
-    return { status: "missing-parent" };
-  }
-  const sourceDatabase = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  const source = resolveSqliteParentForkSourceTranscript(
-    loadSqliteTranscriptEventsFromDatabase(sourceDatabase, params.parentEntry.sessionId),
-  );
-  if (!source) {
-    return { status: "failed" };
-  }
-  const parentSessionFile = formatLegacySqliteSessionMarkerForScope({
-    ...resolved,
-    sessionId: params.parentEntry.sessionId,
-    sessionKey: normalizeSqliteSessionKey(params.parentSessionKey),
+  const captured = await runExclusiveSqliteSessionWrite(resolved, async () => {
+    return runOpenClawAgentWriteTransaction((database): CapturedCrossDatabaseParentFork => {
+      const parentRow = readSessionEntryRow(database, params.parentSessionKey);
+      if (
+        !params.parentEntry.sessionId ||
+        parentRow?.entry.sessionId !== params.parentEntry.sessionId
+      ) {
+        return { status: "missing-parent" };
+      }
+      const memorySubjectSeed = prepareCurrentSessionMemorySubjectLineageSeedInTransaction(
+        database,
+        parentRow.row.session_key,
+      );
+      if (!memorySubjectSeed) {
+        return { status: "failed" };
+      }
+      const source = resolveSqliteParentForkSourceTranscript(
+        loadSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
+      );
+      if (!source) {
+        return { status: "failed" };
+      }
+      const parentSessionFile = formatLegacySqliteSessionMarkerForScope({
+        ...resolved,
+        sessionId: params.parentEntry.sessionId,
+        sessionKey: normalizeSqliteSessionKey(params.parentSessionKey),
+      });
+      return {
+        status: "created",
+        memorySubjectSeed,
+        parentSessionFile,
+        source,
+      };
+    }, toDatabaseOptions(resolved));
   });
+  if (captured.status !== "created") {
+    return captured;
+  }
   return await runExclusiveSqliteSessionWrite(target, async () => {
     const sessionId = params.targetSessionId ?? randomUUID();
     const targetScope = {
@@ -110,11 +145,14 @@ export async function forkSqliteSessionTranscriptFromParent(
     const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
     runOpenClawAgentWriteTransaction((database) => {
       writeSqliteForkedChildTranscriptInTransaction(database, targetScope, {
-        parentSessionFile,
-        source,
+        parentSessionFile: captured.parentSessionFile,
+        source: captured.source,
       });
     }, toDatabaseOptions(target));
-    return { status: "created", transcript: { sessionFile, sessionId } };
+    return {
+      status: "created",
+      transcript: { sessionFile, sessionId, memorySubjectSeed: captured.memorySubjectSeed },
+    };
   });
 }
 
@@ -176,6 +214,10 @@ export async function forkSqliteSessionEntryFromParentTarget(
         sessionTarget,
         patch,
         resolved,
+        parentSubjectSource: {
+          sessionId: parent.entry.sessionId,
+          sessionKey: parent.key,
+        },
       });
       return {
         status: "skipped",
@@ -191,8 +233,8 @@ export async function forkSqliteSessionEntryFromParentTarget(
     let previousIdentity = new Map<string, SessionEntry>();
     let currentIdentity = new Map<string, SessionEntry>();
     runOpenClawAgentWriteTransaction((writeDatabase) => {
-      const freshParent = resolveSqliteLifecyclePrimaryEntry(writeDatabase, parentTarget)?.entry;
-      if (!freshParent?.sessionId) {
+      const freshParent = resolveSqliteLifecyclePrimaryEntry(writeDatabase, parentTarget);
+      if (!freshParent?.entry.sessionId) {
         result = { status: "missing-parent" };
         return;
       }
@@ -203,8 +245,8 @@ export async function forkSqliteSessionEntryFromParentTarget(
         return;
       }
       const fork = forkSqliteParentTranscriptInTransaction(writeDatabase, resolved, {
-        parentEntry: freshParent,
-        parentSessionKey: parentTarget.canonicalKey,
+        parentEntry: freshParent.entry,
+        parentSessionKey: freshParent.key,
         targetSessionKey: sessionTarget.canonicalKey,
       });
       if (fork.status !== "created") {
@@ -216,13 +258,13 @@ export async function forkSqliteSessionEntryFromParentTarget(
         decision,
         entry: cloneSessionEntry(freshBase),
         fork: fork.transcript,
-        parentEntry: cloneSessionEntry(freshParent),
+        parentEntry: cloneSessionEntry(freshParent.entry),
       });
       const forkIdentityPatch: Partial<InternalSessionEntry> = {
         ...patch,
         forkSource: {
           sessionKey: parentTarget.canonicalKey,
-          sessionId: freshParent.sessionId,
+          sessionId: freshParent.entry.sessionId,
         },
         forkedFromParent: true,
         lifecycleRunId: undefined,
@@ -235,6 +277,8 @@ export async function forkSqliteSessionEntryFromParentTarget(
       previousIdentity = readSqliteSessionIdentitySnapshot(writeDatabase, sessionTarget.storeKeys);
       writeSessionEntry(writeDatabase, sessionTarget.canonicalKey, next, {
         previousEntry: freshBase,
+        memorySubjectSeed: fork.transcript.memorySubjectSeed,
+        memorySubjectAliasSourceKeys: sessionTarget.storeKeys,
       });
       rehomeSqliteSessionWindows(
         writeDatabase,
@@ -260,7 +304,7 @@ export async function forkSqliteSessionEntryFromParentTarget(
         status: "forked",
         decision,
         fork: fork.transcript,
-        parentEntry: cloneSessionEntry(freshParent),
+        parentEntry: cloneSessionEntry(freshParent.entry),
         sessionEntry: cloneSessionEntry(next),
       };
     }, toDatabaseOptions(resolved));
@@ -275,6 +319,7 @@ async function persistSqliteParentForkSkipPatch(params: {
   params: ForkSessionEntryFromParentTargetParams;
   sessionTarget: { canonicalKey: string; storeKeys: string[] };
   patch: Partial<SessionEntry> | null | undefined;
+  parentSubjectSource?: { sessionId: string; sessionKey: string };
   resolved: ResolvedSqliteScope;
 }): Promise<SessionEntry> {
   if (!params.patch) {
@@ -290,9 +335,25 @@ async function persistSqliteParentForkSkipPatch(params: {
   let previousIdentity = new Map<string, SessionEntry>();
   let currentIdentity = new Map<string, SessionEntry>();
   runOpenClawAgentWriteTransaction((database) => {
+    let memorySubjectSeed: TrustedSessionMemorySubjectSeed | undefined;
+    if (params.parentSubjectSource) {
+      const parentRow = readSessionEntryRow(database, params.parentSubjectSource.sessionKey);
+      if (parentRow?.entry.sessionId !== params.parentSubjectSource.sessionId) {
+        throw new Error("SQLite parent session changed before skipped-fork subject capture");
+      }
+      memorySubjectSeed = prepareCurrentSessionMemorySubjectLineageSeedInTransaction(
+        database,
+        parentRow.row.session_key,
+      );
+      if (!memorySubjectSeed) {
+        throw new Error("SQLite parent memory subject is unavailable for skipped fork");
+      }
+    }
     previousIdentity = readSqliteSessionIdentitySnapshot(database, params.sessionTarget.storeKeys);
     writeSessionEntry(database, params.sessionTarget.canonicalKey, next, {
       previousEntry: params.entry,
+      ...(memorySubjectSeed ? { memorySubjectSeed } : {}),
+      memorySubjectAliasSourceKeys: params.sessionTarget.storeKeys,
     });
     rehomeSqliteSessionWindows(
       database,
@@ -357,6 +418,17 @@ function forkSqliteParentTranscriptInTransaction(
   if (!params.parentEntry.sessionId) {
     return { status: "missing-parent" };
   }
+  const parentRow = readSessionEntryRow(database, params.parentSessionKey);
+  if (parentRow?.entry.sessionId !== params.parentEntry.sessionId) {
+    return { status: "missing-parent" };
+  }
+  const memorySubjectSeed = prepareCurrentSessionMemorySubjectLineageSeedInTransaction(
+    database,
+    parentRow.row.session_key,
+  );
+  if (!memorySubjectSeed) {
+    return { status: "failed" };
+  }
   const source = resolveSqliteParentForkSourceTranscript(
     loadSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
   );
@@ -384,6 +456,7 @@ function forkSqliteParentTranscriptInTransaction(
     transcript: {
       sessionFile,
       sessionId,
+      memorySubjectSeed,
     },
   };
 }

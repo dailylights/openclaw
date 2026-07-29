@@ -50,6 +50,7 @@ export function buildBlockedInboundContext(
 ): InboundContext {
   return {
     ...emptyInboundContext(params),
+    memorySubjectCapability: params.access.memorySubjectCapability,
     blocked: true,
     blockReason: params.access.senderAccess.reasonCode,
     blockReasonCode: params.access.senderAccess.reasonCode,
@@ -68,6 +69,7 @@ export function buildSkippedInboundContext(
 ): InboundContext {
   return {
     ...emptyInboundContext(params),
+    memorySubjectCapability: params.access.memorySubjectCapability,
     group: params.group,
     skipped: true,
     skipReason: params.skipReason,

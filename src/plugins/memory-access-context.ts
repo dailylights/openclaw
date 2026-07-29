@@ -41,6 +41,8 @@ export class MemoryAccessContextError extends Error {
 type MemorySessionIdentitySnapshot = Readonly<{
   sessionId: string;
   sessionIdentityRevision: string;
+  subjectRevision: string;
+  subject: SessionMemorySubject;
 }>;
 
 export type MemoryAccessContextFacts = Readonly<{
@@ -294,7 +296,11 @@ function brandAndFreeze<T extends object>(
   return deepFreeze(value);
 }
 
-function buildSerializableContext(facts: MemoryAccessContextFacts, nowMs: number) {
+function buildSerializableContext(
+  facts: MemoryAccessContextFacts,
+  identity: MemorySessionIdentitySnapshot,
+  nowMs: number,
+) {
   for (const value of [
     facts.contextId,
     facts.requestId,
@@ -302,8 +308,8 @@ function buildSerializableContext(facts: MemoryAccessContextFacts, nowMs: number
     facts.agentId,
     facts.sessionKey,
     facts.sessionId,
-    facts.sessionIdentityRevision,
-    facts.subjectRevision,
+    identity.sessionIdentityRevision,
+    identity.subjectRevision,
     facts.delivery.egressRegistryRevision,
     facts.delivery.deliveryRevision,
     facts.hostFactsRevision,
@@ -386,10 +392,10 @@ function buildSerializableContext(facts: MemoryAccessContextFacts, nowMs: number
     runId: facts.runId,
     agentId: facts.agentId,
     sessionKey: facts.sessionKey,
-    sessionId: facts.sessionId,
-    sessionIdentityRevision: facts.sessionIdentityRevision,
-    subjectRevision: facts.subjectRevision,
-    subject: cloneSubject(facts.subject),
+    sessionId: identity.sessionId,
+    sessionIdentityRevision: identity.sessionIdentityRevision,
+    subjectRevision: identity.subjectRevision,
+    subject: cloneSubject(identity.subject),
     actor: cloneActor(facts.actor, nowMs),
     verifiedPrincipals: cloneVerifiedPrincipals(facts.verifiedPrincipals, nowMs),
     ...(conversation ? { conversation } : {}),
@@ -429,7 +435,9 @@ export function createMemoryAccessContextFactory(
     }
     const nowMs = dependencies.now?.() ?? Date.now();
     assertCurrentTime(nowMs);
-    const serializable = buildSerializableContext(facts, nowMs);
+    // The caller supplies the expected session identity only for rebound detection.
+    // Subject provenance always comes from the authoritative persisted snapshot.
+    const serializable = buildSerializableContext(facts, currentIdentity, nowMs);
     const contextFingerprint = `sha256:${sha256Hex(stableStringify(serializable))}`;
     const context = {
       ...serializable,

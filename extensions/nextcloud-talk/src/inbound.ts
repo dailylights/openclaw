@@ -364,6 +364,7 @@ export async function handleNextcloudTalkInbound(params: {
     accountId: account.accountId,
     route: { agentId: route.agentId, sessionKey: route.sessionKey },
     ctxPayload,
+    memorySubjectCapability: access.memorySubjectCapability,
     delivery: {
       preparePayload: (payload) =>
         payload.text === undefined

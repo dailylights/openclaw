@@ -1,5 +1,6 @@
 import { resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import { createChannelInboundEnvelopeBuilder } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   bindIngressLifecycleToReplyOptions,
   waitUntilAbort,
@@ -50,10 +51,15 @@ import {
   isGroupInviteAllowed,
   isSummarizationRequest,
   resolveAuthorizedMessageText,
+  resolveTlonDmAccessWithIngress,
   resolveTlonCommandAuthorizationWithIngress,
   resolveTlonGroupMentionDecision,
   stripBotMention,
 } from "./utils.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 type MonitorTlonOpts = {
   runtime?: RuntimeEnv;
@@ -310,6 +316,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
     timestamp: number;
     parentId?: string | null;
     isThreadReply?: boolean;
+    memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
     turnAdoptionLifecycle?: TlonIngressLifecycle;
   }) => {
     const {
@@ -599,6 +606,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
       cfg,
       route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
       ctxPayload,
+      memorySubjectCapability: params.memorySubjectCapability,
       delivery: {
         preparePayload: prepareReplyPayload,
         durable: deliveryTarget
@@ -1043,7 +1051,8 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
       }
 
       // For DMs from others, check allowlist
-      if (!(await isDmAllowedWithIngress(senderShip, effectiveDmAllowlist))) {
+      const dmAccess = await resolveTlonDmAccessWithIngress(senderShip, effectiveDmAllowlist);
+      if (!dmAccess.senderAccess.allowed) {
         // If owner is configured, queue approval request
         if (effectiveOwnerShip) {
           const approval = createPendingApproval({
@@ -1076,6 +1085,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
         messageContent: essay.content, // Pass raw content for media extraction
         isGroup: false,
         timestamp: readNumber(essay, "sent") ?? Date.now(),
+        memorySubjectCapability: dmAccess.memorySubjectCapability,
         turnAdoptionLifecycle,
       });
     } catch (error: unknown) {

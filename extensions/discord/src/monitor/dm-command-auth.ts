@@ -3,9 +3,11 @@ import {
   type AccessGroupMembershipFact,
   type ChannelIngressEventInput,
   type ChannelIngressIdentifierKind,
+  type ChannelIngressStateInput,
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
   type ChannelIngressIdentitySubjectInput,
+  type ResolvedChannelMessageIngress,
   type ResolveChannelMessageIngressParams,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -13,6 +15,10 @@ import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import type { RequestClient } from "../internal/discord.js";
 import { canViewDiscordGuildChannel } from "../send.permissions.js";
 import { normalizeDiscordAllowList } from "./allow-list.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 const DISCORD_ALLOW_LIST_PREFIXES = ["discord:", "user:", "pk:"];
 const DISCORD_CHANNEL_ID = "discord";
@@ -149,6 +155,34 @@ function createDiscordIngressResolver(params: {
       ? { useDefaultPairingStore: params.useDefaultPairingStore }
       : {}),
   });
+}
+
+/** Reprojects a message after Discord-owned admission into the opaque subject carrier. */
+export async function resolveDiscordAdmittedMessageMemorySubjectCapability(params: {
+  accountId: string;
+  sender: { id: string; name?: string; tag?: string };
+  conversation: ChannelIngressStateInput["conversation"];
+  cfg?: OpenClawConfig;
+  token?: string;
+  rest?: RequestClient;
+}): Promise<ChannelIngressMemorySubjectCapability | undefined> {
+  const result = await createDiscordIngressResolver({
+    accountId: params.accountId,
+    cfg: params.cfg,
+    token: params.token,
+    rest: params.rest,
+  }).message({
+    subject: createDiscordDmIngressSubject(params.sender),
+    conversation: params.conversation,
+    // Discord policy already admitted this message. This resolver call only
+    // binds authenticated sender/conversation facts to the opaque capability.
+    event: { kind: "message", authMode: "none", mayPair: false },
+    dmPolicy: "open",
+    groupPolicy: "open",
+    allowFrom: ["*"],
+    command: false,
+  });
+  return result.memorySubjectCapability;
 }
 
 function syntheticAccessGroupMembership(

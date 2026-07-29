@@ -208,6 +208,7 @@ export async function monitorLineProvider(
               accountId: route.accountId,
               route: { agentId: route.agentId, sessionKey: route.sessionKey },
               ctxPayload,
+              memorySubjectCapability: ctx.memorySubjectCapability,
               record: ctx.turn.record,
               replyPipeline: {},
               ...(ingressLifecycle?.abortSignal

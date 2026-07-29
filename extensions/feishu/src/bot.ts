@@ -6,6 +6,7 @@ import {
   resolveEnvelopeFormatOptions,
   toInboundMediaFactsWithMetadata,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   bindIngressLifecycleToReplyOptions,
   resolveAgentOutboundIdentity,
@@ -94,6 +95,10 @@ import {
   type FeishuMediaInfo,
   type FeishuMessageInfo,
 } from "./types.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 // Cache permission errors to avoid spamming the user with repeated notifications.
 // Key: appId or "default", Value: timestamp of last notification
@@ -573,6 +578,7 @@ export async function handleFeishuMessage(params: {
     parseStrictNonNegativeInteger(event.message.create_time) ?? Date.now();
 
   let requireMention = false; // DMs never require mention; groups may override below
+  let groupMemorySubjectCapability: ChannelIngressMemorySubjectCapability | undefined;
   if (isGroup) {
     if (groupConfig?.enabled === false) {
       log(`feishu[${account.accountId}]: group ${ctx.chatId} is disabled`);
@@ -660,6 +666,7 @@ export async function handleFeishuMessage(params: {
       }
       return;
     }
+    groupMemorySubjectCapability = groupSenderActivationIngress.memorySubjectCapability;
 
     if (ctx.senderType === "bot") {
       if (!localBotOpenId || !ctx.senderOpenId) {
@@ -884,6 +891,9 @@ export async function handleFeishuMessage(params: {
     const commandAllowFrom = isGroup
       ? (groupConfig?.allowFrom ?? effectiveConfigAllowFrom)
       : (effectiveDmIngress?.senderAccess.effectiveAllowFrom ?? effectiveConfigAllowFrom);
+    const memorySubjectCapability = isGroup
+      ? groupMemorySubjectCapability
+      : effectiveDmIngress?.memorySubjectCapability;
 
     const currentConversationId = peerId;
     const parentConversationId = isGroup ? (parentPeer?.id ?? ctx.chatId) : undefined;
@@ -1591,6 +1601,7 @@ export async function handleFeishuMessage(params: {
           accountId: route.accountId,
           route: { agentId: paramsLocal.agentId, sessionKey: paramsLocal.sessionKey },
           ctxPayload: paramsLocal.ctxPayload,
+          memorySubjectCapability,
           record: paramsLocal.record,
           ...(paramsLocal.variant.kind === "observeOnly"
             ? {
@@ -1855,6 +1866,7 @@ export async function handleFeishuMessage(params: {
             accountId: route.accountId,
             route: { agentId: route.agentId, sessionKey: route.sessionKey },
             ctxPayload,
+            memorySubjectCapability,
             record: {
               updateLastRoute: buildFeishuInboundLastRouteUpdate({
                 sessionKey: route.sessionKey,

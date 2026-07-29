@@ -29,7 +29,10 @@ import {
   resolveDiscordShouldRequireMention,
 } from "./allow-list.js";
 import { resolveDiscordChannelInfoSafe, resolveDiscordChannelNameSafe } from "./channel-access.js";
-import { resolveDiscordTextCommandAccess } from "./dm-command-auth.js";
+import {
+  resolveDiscordAdmittedMessageMemorySubjectCapability,
+  resolveDiscordTextCommandAccess,
+} from "./dm-command-auth.js";
 import { resolveDiscordSystemLocation, resolveTimestampMs } from "./format.js";
 import { resolveDiscordMessageStickers } from "./message-forwarded.js";
 import { resolveDiscordDmPreflightAccess } from "./message-handler.dm-preflight.js";
@@ -827,6 +830,22 @@ export async function preflightDiscordMessage(
   }
   preparedMedia.push(...forwardedMedia);
 
+  const memorySubjectCapability = await resolveDiscordAdmittedMessageMemorySubjectCapability({
+    accountId: effectiveRoute.accountId,
+    cfg: params.cfg,
+    token: params.token,
+    rest: params.client.rest,
+    sender: { id: sender.id, name: sender.name, tag: sender.tag },
+    conversation: {
+      kind: isDirectMessage ? "direct" : isGroupDm ? "group" : "channel",
+      id: isDirectMessage ? sender.id : messageChannelId,
+      ...(threadParentId ? { parentId: threadParentId, threadId: messageChannelId } : {}),
+    },
+  });
+  if (isPreflightAborted(params.abortSignal)) {
+    return null;
+  }
+
   logDebug(
     `[discord-preflight] success: route=${effectiveRoute.agentId} sessionKey=${effectiveRoute.sessionKey}`,
   );
@@ -850,6 +869,7 @@ export async function preflightDiscordMessage(
     messageText,
     ...(preflightTranscript !== undefined ? { preflightAudioTranscript: preflightTranscript } : {}),
     preparedMedia,
+    memorySubjectCapability,
     wasMentioned,
     route: effectiveRoute,
     threadBinding,

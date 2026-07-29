@@ -419,7 +419,9 @@ export async function appendSqliteExpectedSessionTranscriptTurn(
       if (next !== fresh.entry) {
         const identityKeys = collectSessionEntryLookupKeys(transactionDb, resolved.sessionKey);
         previousIdentity = readSqliteSessionIdentitySnapshot(transactionDb, identityKeys);
-        writeSessionEntry(transactionDb, resolved.sessionKey, next);
+        writeSessionEntry(transactionDb, resolved.sessionKey, next, {
+          memorySubjectAliasSourceKeys: fresh.legacyKeys,
+        });
         deleteLegacySessionEntryRows(transactionDb, fresh.legacyKeys, resolved.sessionKey);
         currentIdentity = readSqliteSessionIdentitySnapshot(transactionDb, identityKeys);
       }

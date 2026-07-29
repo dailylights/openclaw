@@ -1,5 +1,6 @@
 import type { SqliteSessionStateDeletePlan } from "./session-accessor.sqlite-archive.js";
 import type { SessionEntryLifecycleRemoval } from "./session-accessor.sqlite-contract.js";
+import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
 import type { SessionResetBoundaryPlan } from "./session-reset-boundary-event.js";
 import type { SessionEntry } from "./types.js";
 
@@ -27,6 +28,7 @@ export type SqliteProjectedLifecycleMutation = {
   upsertedEntries: Array<{
     entry: SessionEntry;
     expectedEntry: SessionEntry | undefined;
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
     resetBoundaryPlan?: SessionResetBoundaryPlan;
     sessionKey: string;
   }>;

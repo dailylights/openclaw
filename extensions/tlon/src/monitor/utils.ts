@@ -144,7 +144,15 @@ export async function isDmAllowedWithIngress(
   senderShip: string,
   allowlist: string[] | undefined,
 ): Promise<boolean> {
-  const access = await resolveStableChannelMessageIngress({
+  const access = await resolveTlonDmAccessWithIngress(senderShip, allowlist);
+  return access.senderAccess.allowed;
+}
+
+export async function resolveTlonDmAccessWithIngress(
+  senderShip: string,
+  allowlist: string[] | undefined,
+) {
+  return await resolveStableChannelMessageIngress({
     channelId: "tlon",
     accountId: "default",
     identity: tlonIngressIdentity,
@@ -156,7 +164,6 @@ export async function isDmAllowedWithIngress(
     dmPolicy: "allowlist",
     allowFrom: allowlist ?? [],
   });
-  return access.senderAccess.allowed;
 }
 
 export async function resolveTlonCommandAuthorizationWithIngress(params: {

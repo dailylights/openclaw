@@ -483,6 +483,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           accountId: route.accountId,
           route: { agentId: route.agentId, sessionKey: route.sessionKey },
           ctxPayload,
+          memorySubjectCapability: entry.memorySubjectCapability,
           record: {
             updateLastRoute: !entry.isGroup
               ? {
@@ -923,7 +924,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const hasControlCommandInMessage = isControlCommandMessage(messageText, deps.cfg);
 
     const senderDisplay = formatSignalSenderDisplay(sender);
-    const { senderAccess, commandAccess } = await resolveSignalAccessState({
+    const resolvedAccess = await resolveSignalAccessState({
       accountId: deps.accountId,
       dmPolicy: deps.dmPolicy,
       groupPolicy: deps.groupPolicy,
@@ -935,6 +936,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       cfg: deps.cfg,
       hasControlCommand: hasControlCommandInMessage,
     });
+    const { senderAccess, commandAccess } = resolvedAccess;
     const quoteText = normalizeOptionalString(dataMessage?.quote?.text) ?? "";
     const { contextVisibilityMode, quoteSenderAllowed, visibleQuoteText, visibleQuoteSender } =
       resolveSignalQuoteContext({
@@ -1245,6 +1247,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       sourceTimestamp: inboundTimestamp,
     });
     const entry: SignalInboundEntry = {
+      memorySubjectCapability: resolvedAccess.memorySubjectCapability,
       senderName,
       senderDisplay,
       senderRecipient,

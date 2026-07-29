@@ -11,6 +11,7 @@ import {
   resolveChannelInboundRouteEnvelope,
   resolveInboundRouteEnvelopeBuilderWithRuntime,
 } from "./inbound-event/envelope.js";
+import type { ChannelIngressMemorySubjectCapability } from "./message-access/memory-subject-capability.js";
 import { createChannelReplyPipeline } from "./message/reply-pipeline.js";
 import { dispatchChannelInboundTurn } from "./turn/kernel.js";
 import type { ChannelTurnPlan } from "./turn/types.js";
@@ -31,6 +32,7 @@ type DirectDmRoutePeer = { kind: "direct"; id: string };
 type DirectDmRoute = { agentId: string; sessionKey: string; accountId?: string };
 
 type DispatchInboundDirectDmParams = {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   cfg: OpenClawConfig;
   channel: string;
   channelLabel: string;
@@ -144,6 +146,7 @@ function buildDirectDmTurnPlan(
     accountId: route.accountId ?? params.accountId,
     route: { agentId: route.agentId, sessionKey: route.sessionKey },
     ctxPayload,
+    memorySubjectCapability: params.memorySubjectCapability,
     record: {
       onRecordError: params.onRecordError,
     },

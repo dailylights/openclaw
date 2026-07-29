@@ -4,6 +4,10 @@ import type { WhatsAppIdentity } from "../identity.js";
 import type { DeprecatedWebInboundAdmissionTopLevelFields } from "./admission-types.js";
 import { resolveWhatsAppGroupConversationId } from "./group-conversation.js";
 
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
+
 type WhatsAppInboundIngressDecision = Pick<
   ResolvedChannelMessageIngress["ingress"],
   "admission" | "decision" | "decisiveGateId" | "reasonCode"
@@ -25,6 +29,7 @@ type WhatsAppInboundActivationAccess = Pick<
 >;
 
 type WhatsAppInboundAdmissionAccess = {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   ingress: WhatsAppInboundIngressDecision;
   senderAccess: WhatsAppInboundSenderAccess;
   commandAccess: WhatsAppInboundCommandAccess;
@@ -76,6 +81,7 @@ type AdmittedWhatsAppInboundMessage<T extends WhatsAppInboundAdmissionCarrier> =
  * publishing raw allowlist material or session-dependent post-admission state.
  */
 export type WhatsAppInboundAdmission = {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   accountId: string;
   isSelfChat: boolean;
   account: {
@@ -129,6 +135,7 @@ export function buildWhatsAppInboundAdmission(params: {
   senderId: string;
 }): WhatsAppInboundAdmission {
   return {
+    memorySubjectCapability: params.access.memorySubjectCapability,
     accountId: params.policy.account.accountId,
     isSelfChat: params.policy.isSelfChat,
     account: copyAccount(params.policy.account),

@@ -271,13 +271,13 @@ describe("noteSecurityWarnings gateway exposure", () => {
     expect(note).not.toHaveBeenCalled();
   });
 
-  it("shows explicit dmScope config command for multi-user DMs", async () => {
+  function installMultiUserDmPlugin(accountIds: string[]) {
     pluginRegistry.list = [
       {
         id: "test-channel",
         meta: { label: "Test Channel" },
         config: {
-          listAccountIds: () => ["default"],
+          listAccountIds: () => accountIds,
           inspectAccount: () => ({ enabled: true, configured: true }),
           resolveAccount: () => ({}),
           isEnabled: () => true,
@@ -293,6 +293,10 @@ describe("noteSecurityWarnings gateway exposure", () => {
         },
       },
     ];
+  }
+
+  it("shows the exact single-account dmScope remediation for multi-user DMs", async () => {
+    installMultiUserDmPlugin(["default"]);
     const cfg = { session: { dmScope: "main" } } as OpenClawConfig;
     await noteSecurityWarnings(cfg);
     expect(listReadOnlyChannelPluginsForConfigMock).toHaveBeenCalledWith(cfg, {
@@ -301,6 +305,17 @@ describe("noteSecurityWarnings gateway exposure", () => {
     });
     const message = lastMessage();
     expect(message).toContain('config set session.dmScope "per-channel-peer"');
+    expect(message).not.toContain("per-account-channel-peer");
+  });
+
+  it("shows the exact multi-account dmScope remediation for multi-user DMs", async () => {
+    installMultiUserDmPlugin(["primary", "secondary"]);
+    const cfg = { session: { dmScope: "main" } } as OpenClawConfig;
+    await noteSecurityWarnings(cfg);
+
+    const message = lastMessage();
+    expect(message).toContain('config set session.dmScope "per-account-channel-peer"');
+    expect(message).not.toContain('session.dmScope "per-channel-peer"');
   });
 
   it("clarifies approvals.exec forwarding-only behavior", async () => {

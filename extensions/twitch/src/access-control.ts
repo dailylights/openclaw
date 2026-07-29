@@ -4,11 +4,17 @@ import {
   defineStableChannelIngressIdentity,
   type ChannelIngressIdentitySubjectInput,
   type IngressReasonCode,
+  type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { TwitchAccountConfig, TwitchChatMessage } from "./types.js";
 
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
+
 type TwitchAccessControlResult = {
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   allowed: boolean;
   reason?: string;
   matchKey?: string;
@@ -40,13 +46,14 @@ const twitchRoleIdentity = defineStableChannelIngressIdentity({
 export async function checkTwitchAccessControl(params: {
   message: TwitchChatMessage;
   account: TwitchAccountConfig;
+  accountId?: string;
   botUsername: string;
 }): Promise<TwitchAccessControlResult> {
   const { message, account, botUsername } = params;
   const policyKind = resolveTwitchPolicyKind(account);
   const resolved = await createChannelIngressResolver({
     channelId: "twitch",
-    accountId: "default",
+    accountId: params.accountId ?? "default",
     identity: policyKind === "role" ? twitchRoleIdentity : twitchUserIdentity,
   }).message({
     subject:
@@ -90,6 +97,7 @@ export async function checkTwitchAccessControl(params: {
   if (decision.admission === "dispatch") {
     if (policyKind === "allowFrom") {
       return {
+        memorySubjectCapability: resolved.memorySubjectCapability,
         allowed: true,
         matchKey: params.message.userId,
         matchSource: "allowlist",
@@ -97,12 +105,14 @@ export async function checkTwitchAccessControl(params: {
     }
     if (policyKind === "role") {
       return {
+        memorySubjectCapability: resolved.memorySubjectCapability,
         allowed: true,
         matchKey: params.account.allowedRoles?.join(","),
         matchSource: "role",
       };
     }
     return {
+      memorySubjectCapability: resolved.memorySubjectCapability,
       allowed: true,
     };
   }

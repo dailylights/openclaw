@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type { SessionUnreferencedArtifactSweepResult } from "./disk-budget.js";
+import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
 import type { SessionResetBoundaryReason } from "./session-reset-boundary-event.js";
 import type { SessionMaintenanceApplyReport } from "./store-maintenance-operations.js";
 import type { SessionEntry } from "./types.js";
@@ -62,6 +63,8 @@ export type ResetSessionEntryLifecycleParams = {
   storePath: string;
   /** Canonical key plus aliases that identify the logical entry. */
   target: SessionLifecycleStoreTarget;
+  /** Host-trusted subject used only when reset materializes a missing logical session. */
+  memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
 };
 
 export type DeleteSessionEntryLifecycleResult = {
@@ -126,6 +129,8 @@ export type SessionEntryLifecycleRemoval = SessionEntryLifecycleRemovalBase &
 export type SessionEntryLifecycleUpsert = {
   sessionKey: string;
   resetBoundaryReason?: SessionResetBoundaryReason;
+  /** Host-trusted subject used only when this logical session has no persisted subject. */
+  memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
 } & (
   | {
       entry: SessionEntry;

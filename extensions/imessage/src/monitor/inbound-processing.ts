@@ -20,6 +20,7 @@ import {
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
   type ChannelIngressIdentityDescriptor,
+  type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   buildChannelGroupsScopeTree,
@@ -57,6 +58,10 @@ import type { SelfChatCache } from "./self-chat-cache.js";
 import type { MonitorIMessageOpts, IMessagePayload } from "./types.js";
 
 export { resolveIMessageReactionContext };
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 type IMessageReactionNotificationMode = "off" | "own" | "all";
 
@@ -350,6 +355,7 @@ function resolveIMessageGroupSystemPrompt(params: {
 
 type IMessageInboundDispatchDecision = {
   kind: "dispatch";
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   isGroup: boolean;
   chatId?: number;
   chatGuid?: string;
@@ -858,6 +864,7 @@ export async function resolveIMessageInboundDecision(params: {
 
   return {
     kind: "dispatch",
+    memorySubjectCapability: accessDecision.memorySubjectCapability,
     isGroup,
     chatId,
     chatGuid,

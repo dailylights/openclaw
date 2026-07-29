@@ -247,6 +247,91 @@ CREATE TABLE IF NOT EXISTS session_members (
 CREATE INDEX IF NOT EXISTS idx_agent_session_members_identity
   ON session_members(identity_id, session_key);
 
+CREATE TABLE IF NOT EXISTS session_memory_subjects (
+  session_key TEXT NOT NULL PRIMARY KEY,
+  subject_revision TEXT NOT NULL,
+  subject_kind TEXT NOT NULL CHECK (
+    subject_kind IN ('user', 'conversation', 'service', 'agent', 'system', 'ambiguous')
+  ),
+  principal_id TEXT,
+  conversation_principal_id TEXT,
+  channel TEXT,
+  account_id TEXT,
+  ambiguous_reason TEXT CHECK (
+    ambiguous_reason IS NULL OR ambiguous_reason IN ('shared-main', 'unbound', 'conflicting-bindings')
+  ),
+  creation_evidence_kind TEXT CHECK (
+    creation_evidence_kind IS NULL OR creation_evidence_kind IN (
+      'gateway-profile', 'channel-binding', 'adapter-attested', 'explicit-service'
+    )
+  ),
+  creation_evidence_revision TEXT,
+  creation_binding_id TEXT,
+  canonical_conversation_ref TEXT,
+  created_at INTEGER NOT NULL,
+  CHECK (
+    (subject_kind = 'user'
+      AND principal_id IS NOT NULL
+      AND conversation_principal_id IS NULL
+      AND channel IS NULL
+      AND account_id IS NULL
+      AND ambiguous_reason IS NULL
+      AND creation_evidence_kind IS NOT NULL
+      AND creation_evidence_revision IS NOT NULL)
+    OR
+    (subject_kind = 'conversation'
+      AND principal_id IS NULL
+      AND conversation_principal_id IS NOT NULL
+      AND channel IS NOT NULL
+      AND account_id IS NOT NULL
+      AND ambiguous_reason IS NULL
+      AND creation_evidence_kind IS NULL
+      AND creation_evidence_revision IS NULL
+      AND creation_binding_id IS NULL)
+    OR
+    (subject_kind IN ('service', 'agent', 'system')
+      AND principal_id IS NOT NULL
+      AND conversation_principal_id IS NULL
+      AND channel IS NULL
+      AND account_id IS NULL
+      AND ambiguous_reason IS NULL
+      AND creation_evidence_kind IS NULL
+      AND creation_evidence_revision IS NULL
+      AND creation_binding_id IS NULL)
+    OR
+    (subject_kind = 'ambiguous'
+      AND principal_id IS NULL
+      AND conversation_principal_id IS NULL
+      AND channel IS NULL
+      AND account_id IS NULL
+      AND ambiguous_reason IS NOT NULL
+      AND creation_evidence_kind IS NULL
+      AND creation_evidence_revision IS NULL
+      AND creation_binding_id IS NULL
+      AND canonical_conversation_ref IS NULL)
+  ),
+  CHECK (
+    creation_binding_id IS NULL OR creation_evidence_kind = 'channel-binding'
+  ),
+  FOREIGN KEY (session_key) REFERENCES session_nodes(session_key) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_memory_subjects_revision
+  ON session_memory_subjects(subject_revision, session_key);
+
+CREATE TABLE IF NOT EXISTS session_memory_subject_snapshots (
+  session_id TEXT NOT NULL PRIMARY KEY,
+  session_key TEXT NOT NULL,
+  subject_revision TEXT NOT NULL,
+  session_identity_revision TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_key) REFERENCES session_memory_subjects(session_key) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_memory_subject_snapshots_session_key
+  ON session_memory_subject_snapshots(session_key, created_at DESC, session_id);
+
 CREATE TABLE IF NOT EXISTS session_suggestions (
   id TEXT PRIMARY KEY,
   session_key TEXT NOT NULL,

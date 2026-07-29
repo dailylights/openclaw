@@ -502,6 +502,7 @@ export async function handleIrcInbound(params: {
     accountId: account.accountId,
     route: { agentId: route.agentId, sessionKey: route.sessionKey },
     ctxPayload,
+    memorySubjectCapability: access.memorySubjectCapability,
     delivery: {
       deliver: async (payload) => {
         await deliverIrcReply({

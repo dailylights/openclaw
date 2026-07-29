@@ -90,6 +90,7 @@ const hoisted = vi.hoisted(() => {
   const getSubagentRunByChildSessionKeyMock = vi.fn();
   const listTasksForOwnerKeyMock = vi.fn();
   const upsertSessionEntryMock = vi.fn();
+  const readCurrentSessionMemorySubjectMock = vi.fn();
   const createSessionAccessorMock = () => {
     const resolveMockStorePath = (scope: {
       agentId?: string;
@@ -131,8 +132,11 @@ const hoisted = vi.hoisted(() => {
       listSessionEntriesReadOnly: listMockEntries,
       loadSessionEntry: loadMockEntry,
       loadSessionEntryReadOnly: loadMockEntry,
-      upsertSessionEntry: async (scope: unknown, patch: SessionEntry) =>
-        await upsertSessionEntryMock(scope, patch),
+      readCurrentSessionMemorySubject: readCurrentSessionMemorySubjectMock,
+      prepareSessionMemorySubjectLineageSeed: (snapshot: unknown) => snapshot,
+      prepareAmbiguousSessionMemorySubjectSeed: () => ({}),
+      upsertSessionEntry: async (scope: unknown, patch: SessionEntry, options?: unknown) =>
+        await upsertSessionEntryMock(scope, patch, options),
       resolveSessionTranscriptRuntimeTarget: async (scope: {
         agentId: string;
         sessionId: string;
@@ -184,6 +188,7 @@ const hoisted = vi.hoisted(() => {
     getSubagentRunByChildSessionKeyMock,
     listTasksForOwnerKeyMock,
     upsertSessionEntryMock,
+    readCurrentSessionMemorySubjectMock,
     createSessionAccessorMock,
     state,
   };
@@ -784,6 +789,7 @@ describe("spawnAcpDirect", () => {
         sessionId: patch.sessionId ?? "sess-123",
         updatedAt: patch.updatedAt ?? Date.now(),
       }));
+    hoisted.readCurrentSessionMemorySubjectMock.mockReset().mockReturnValue(undefined);
 
     hoisted.callGatewayMock.mockReset();
     hoisted.callGatewayMock.mockImplementation(async (argsUnknown: unknown) => {
@@ -918,6 +924,24 @@ describe("spawnAcpDirect", () => {
 
   afterEach(() => {
     sessionBindingServiceTesting.resetSessionBindingAdaptersForTests();
+  });
+
+  it("returns spawn_failed when requester memory subject resolution fails", async () => {
+    hoisted.readCurrentSessionMemorySubjectMock.mockImplementationOnce(() => {
+      throw new Error("subject database unavailable");
+    });
+
+    await expect(spawnAcpDirect(createSpawnRequest(), createRequesterContext())).resolves.toEqual({
+      status: "error",
+      errorCode: "spawn_failed",
+      error: "Failed to resolve requester memory subject: subject database unavailable",
+    });
+    expect(hoisted.upsertSessionEntryMock).not.toHaveBeenCalled();
+    expect(hoisted.readCurrentSessionMemorySubjectMock).toHaveBeenCalledWith({
+      agentId: "main",
+      sessionKey: "agent:main:telegram:direct:6098642967",
+      storePath: "/tmp/codex-sessions.json",
+    });
   });
 
   it("spawns ACP session, binds a new thread, and dispatches initial task", async () => {

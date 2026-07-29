@@ -3,9 +3,14 @@ import {
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
   type ChannelIngressEventInput,
+  type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { DmPolicy, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeAllowFrom, type NormalizedAllowFrom } from "./bot-access.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 const TELEGRAM_CHANNEL_ID = "telegram";
 
@@ -50,6 +55,36 @@ function telegramConversation(params: {
     id: String(params.chatId),
     ...(params.resolvedThreadId != null ? { threadId: String(params.resolvedThreadId) } : {}),
   };
+}
+
+/** Reprojects a Telegram-admitted message into the opaque session-subject carrier. */
+export async function resolveTelegramAdmittedMessageMemorySubjectCapability(params: {
+  accountId: string;
+  cfg: OpenClawConfig;
+  isGroup: boolean;
+  chatId: string | number;
+  threadId?: number;
+  stableSenderId: string;
+}): Promise<ChannelIngressMemorySubjectCapability | undefined> {
+  const result = await createTelegramIngressResolver({
+    accountId: params.accountId,
+    cfg: params.cfg,
+  }).message({
+    subject: createTelegramIngressSubject(params.stableSenderId),
+    conversation: telegramConversation({
+      isGroup: params.isGroup,
+      chatId: params.chatId,
+      resolvedThreadId: params.threadId,
+    }),
+    // Telegram-owned authorization has already accepted this message. This
+    // call binds its authenticated transport facts without replacing policy.
+    event: { kind: "message", authMode: "none", mayPair: false },
+    dmPolicy: "open",
+    groupPolicy: "open",
+    allowFrom: ["*"],
+    command: false,
+  });
+  return result.memorySubjectCapability;
 }
 
 export async function resolveTelegramCommandIngressAuthorization(params: {

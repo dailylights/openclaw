@@ -592,6 +592,7 @@ export async function processMessage(params: {
           accountId: params.route.accountId,
           route: { agentId: params.route.agentId, sessionKey: params.route.sessionKey },
           ctxPayload,
+          memorySubjectCapability: admission.memorySubjectCapability,
           record: {
             onRecordError: (err) => {
               params.replyLogger.warn(

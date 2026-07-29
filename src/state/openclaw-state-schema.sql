@@ -211,6 +211,78 @@ CREATE TABLE IF NOT EXISTS execution_identity_contexts (
 CREATE INDEX IF NOT EXISTS execution_identity_contexts_run_created_idx
   ON execution_identity_contexts (run_id, created_at, execution_id);
 
+CREATE TABLE IF NOT EXISTS memory_principals (
+  principal_id TEXT NOT NULL PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (
+    kind IN ('gateway-profile', 'enterprise', 'service', 'agent', 'system', 'conversation')
+  ),
+  user_profile_id TEXT,
+  issuer TEXT,
+  subject_key TEXT,
+  state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'merged')),
+  evidence_revision TEXT NOT NULL,
+  merged_into TEXT,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (
+    (kind = 'gateway-profile' AND user_profile_id IS NOT NULL AND issuer IS NULL AND subject_key IS NULL)
+    OR
+    (kind <> 'gateway-profile' AND user_profile_id IS NULL AND issuer IS NOT NULL AND subject_key IS NOT NULL)
+  ),
+  CHECK (
+    (state = 'active' AND merged_into IS NULL AND revoked_at IS NULL)
+    OR
+    (state = 'revoked' AND merged_into IS NULL AND revoked_at IS NOT NULL)
+    OR
+    (state = 'merged' AND merged_into IS NOT NULL AND revoked_at IS NULL)
+  ),
+  FOREIGN KEY (merged_into) REFERENCES memory_principals(principal_id)
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_principals_user_profile
+  ON memory_principals(user_profile_id)
+  WHERE user_profile_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_principals_opaque_subject
+  ON memory_principals(kind, issuer, subject_key)
+  WHERE subject_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memory_principals_merge_head
+  ON memory_principals(merged_into)
+  WHERE merged_into IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS memory_identity_bindings (
+  binding_id TEXT NOT NULL PRIMARY KEY,
+  channel TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  sender_lookup_hmac TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  adapter_id TEXT NOT NULL,
+  assurance TEXT NOT NULL CHECK (assurance IN ('adapter-attested', 'oidc')),
+  verification_method TEXT NOT NULL,
+  evidence_revision TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  revoked_by TEXT,
+  revocation_reason TEXT,
+  CHECK (
+    (revoked_at IS NULL AND revoked_by IS NULL AND revocation_reason IS NULL)
+    OR
+    (revoked_at IS NOT NULL AND revoked_by IS NOT NULL)
+  ),
+  FOREIGN KEY (principal_id) REFERENCES memory_principals(principal_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_identity_bindings_lookup
+  ON memory_identity_bindings(channel, account_id, sender_lookup_hmac, revoked_at, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_identity_bindings_principal
+  ON memory_identity_bindings(principal_id, revoked_at);
+
 CREATE TABLE IF NOT EXISTS session_state_events (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   dedupe_key TEXT UNIQUE,

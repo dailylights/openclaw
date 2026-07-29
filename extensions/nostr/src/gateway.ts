@@ -199,6 +199,7 @@ export const startNostrGatewayAccount: NostrGatewayStart = async (ctx) => {
             commandAuthorized: resolvedAccess.commandAccess.requested
               ? resolvedAccess.commandAccess.authorized
               : undefined,
+            memorySubjectCapability: resolvedAccess.memorySubjectCapability,
             turnAdoptionLifecycle:
               bindIngressLifecycleToReplyOptions(lifecycle).turnAdoptionLifecycle,
             deliver: async (payload) => {

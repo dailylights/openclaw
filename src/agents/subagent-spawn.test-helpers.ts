@@ -270,6 +270,9 @@ export async function loadSubagentSpawnModuleForTest(params: {
       params.loadPreparedModelCatalogMock?.(...args) ?? [],
     loadSessionEntry: (scope: { storePath?: string; sessionKey: string }) =>
       ((params.loadSessionStoreMock?.(scope.storePath) ?? {}) as SessionStore)[scope.sessionKey],
+    readCurrentSessionMemorySubject: () => undefined,
+    prepareSessionMemorySubjectLineageSeed: (snapshot: unknown) => snapshot,
+    prepareAmbiguousSessionMemorySubjectSeed: () => ({}),
     loadSessionStore: params.loadSessionStoreMock ?? (() => ({})),
     ensureContextEnginesInitialized:
       params.ensureContextEnginesInitializedMock ?? (() => undefined),
@@ -318,6 +321,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
     upsertSessionEntry: async (
       scope: { storePath?: string; sessionKey: string },
       patch: Record<string, unknown>,
+      _options?: unknown,
     ) => {
       const updateSessionStore =
         params.updateSessionStoreMock ??

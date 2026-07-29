@@ -441,6 +441,7 @@ async function handleMessageEvent(event: MessageEvent, context: LineHandlerConte
     }
 
     const messageContext = await buildLineMessageContext({
+      memorySubjectCapability: decision.memorySubjectCapability,
       event,
       allMedia,
       mediaUnavailable,
@@ -501,6 +502,7 @@ async function handlePostbackEvent(
   }
 
   const postbackContext = await buildLinePostbackContext({
+    memorySubjectCapability: decision.memorySubjectCapability,
     event,
     cfg: context.cfg,
     account: context.account,

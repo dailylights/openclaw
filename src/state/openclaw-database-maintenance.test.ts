@@ -34,6 +34,36 @@ describe("OpenClaw database maintenance schema validation", () => {
     }
   });
 
+  it("accepts current databases before lazy multiplayer-memory tables are ensured", () => {
+    const globalDatabase = createGlobalDatabase();
+    const agentDatabase = createAgentDatabase();
+    try {
+      globalDatabase.exec(`
+        DROP TABLE memory_identity_bindings;
+        DROP TABLE memory_principals;
+      `);
+      agentDatabase.exec(`
+        DROP TABLE session_memory_subject_snapshots;
+        DROP TABLE session_memory_subjects;
+      `);
+
+      expect(() =>
+        assertOpenClawStateDatabaseForMaintenance(globalDatabase, {
+          pathname: "global.sqlite",
+        }),
+      ).not.toThrow();
+      expect(() =>
+        assertOpenClawAgentDatabaseForMaintenance(agentDatabase, {
+          agentId: "worker-1",
+          pathname: "agent.sqlite",
+        }),
+      ).not.toThrow();
+    } finally {
+      agentDatabase.close();
+      globalDatabase.close();
+    }
+  });
+
   it("accepts a global schema produced by an additive column migration", () => {
     const schemaWithoutMigratedColumn = OPENCLAW_STATE_SCHEMA_SQL.replace(
       "  delivery_thread_id_type TEXT,\n",

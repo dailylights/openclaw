@@ -141,6 +141,7 @@ export async function handleBuzzInbound(params: {
       sessionKey: route.sessionKey,
     },
     ctxPayload,
+    memorySubjectCapability: access.memorySubjectCapability,
     delivery: {
       deliver: async (payload) => {
         const text =

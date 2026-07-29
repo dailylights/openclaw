@@ -445,6 +445,7 @@ export async function dispatchOutbound(
           sessionKey: inbound.route.sessionKey,
         },
         ctxPayload,
+        memorySubjectCapability: inbound.memorySubjectCapability,
         record: {
           onRecordError: (err: unknown) => {
             log?.error(

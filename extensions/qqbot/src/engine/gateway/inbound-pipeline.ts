@@ -126,6 +126,7 @@ export async function buildInboundContext(
   const groupSystemPrompt = buildGroupSystemPrompt(accountSystemInstruction, groupInfo);
 
   return {
+    memorySubjectCapability: access.memorySubjectCapability,
     event,
     route,
     isGroupChat,

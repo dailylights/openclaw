@@ -118,6 +118,7 @@ export async function runTelegramDispatchTurn(params: {
             sessionKey: context.route.sessionKey,
           },
           ctxPayload: context.ctxPayload,
+          memorySubjectCapability: context.memorySubjectCapability,
           record: context.turn.record,
           delivery: {
             deliverWithProviderMessageSending: async (payload, info) => {

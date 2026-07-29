@@ -6,6 +6,9 @@
 export { getRuntimeConfig } from "../config/config.js";
 export {
   loadSessionEntryReadOnly as loadSessionEntry,
+  prepareAmbiguousSessionMemorySubjectSeed,
+  prepareSessionMemorySubjectLineageSeed,
+  readCurrentSessionMemorySubject,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
 export { forkSessionEntryFromParent } from "../auto-reply/reply/session-fork.js";

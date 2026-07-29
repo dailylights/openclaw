@@ -417,6 +417,7 @@ export async function applySqliteSessionEntryLifecycleMutation(params: {
         sessionKey,
         entry,
         expectedEntry,
+        memorySubjectSeed,
         resetBoundaryPlan,
       } of projected.upsertedEntries) {
         const sameKeyRemoval = validatedRemovals.find(
@@ -454,17 +455,19 @@ export async function applySqliteSessionEntryLifecycleMutation(params: {
             throw new Error(`Failed to append reset boundary for ${sessionKey}`);
           }
         }
-        writeSessionEntry(transactionDb, sessionKey, entry, {
-          allowStoredAliases: params.allowCanonicalRepair === true,
-          preserveNodeSuggestions: params.allowCanonicalRepair === true,
-          previousEntry: expectedCurrentEntry ?? null,
-        });
         const relatedRemovalKeys = validatedRemovals.flatMap((removal) => {
           const removedSessionId = removal.expectedEntry.sessionId;
           return removal.sessionKey !== sessionKey &&
             (removedSessionId === entry.sessionId || removedSessionId === entry.previousSessionId)
             ? [removal.sessionKey]
             : [];
+        });
+        writeSessionEntry(transactionDb, sessionKey, entry, {
+          allowStoredAliases: params.allowCanonicalRepair === true,
+          preserveNodeSuggestions: params.allowCanonicalRepair === true,
+          previousEntry: expectedCurrentEntry ?? null,
+          ...(memorySubjectSeed ? { memorySubjectSeed } : {}),
+          memorySubjectAliasSourceKeys: relatedRemovalKeys,
         });
         rehomeSqliteSessionWindows(transactionDb, sessionKey, relatedRemovalKeys);
         for (const legacyKey of relatedRemovalKeys) {

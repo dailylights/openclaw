@@ -212,6 +212,8 @@ export async function resetSqliteSessionEntryLifecycle(
         }
         writeSessionEntry(transactionDb, params.target.canonicalKey, nextEntry, {
           previousEntry: current?.entry ?? null,
+          ...(params.memorySubjectSeed ? { memorySubjectSeed: params.memorySubjectSeed } : {}),
+          memorySubjectAliasSourceKeys: params.target.storeKeys,
         });
         rehomeSqliteSessionWindows(
           transactionDb,

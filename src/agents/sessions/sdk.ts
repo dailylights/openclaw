@@ -10,7 +10,10 @@ import {
   resolveThinkingDefaultForModel,
   type ThinkingCatalogEntry,
 } from "../../auto-reply/thinking.js";
-import { createSessionEntryWithTranscript } from "../../config/sessions/session-accessor.js";
+import {
+  createSessionEntryWithTranscript,
+  prepareExplicitSessionMemorySubjectSeed,
+} from "../../config/sessions/session-accessor.js";
 import { bindStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import type { Message, Model } from "../../llm/types.js";
 import { getAgentDir } from "../config.js";
@@ -597,7 +600,13 @@ async function createDefaultSdkSessionManager(
       ok: true,
       entry: { sessionId, updatedAt: Date.now() },
     }),
-    { cwd },
+    {
+      cwd,
+      memorySubjectSeed: prepareExplicitSessionMemorySubjectSeed({
+        kind: "agent",
+        stableSubjectId: target.agentId,
+      }),
+    },
   );
   if (!created.ok) {
     throw new Error(`Failed to initialize SDK session transcript: ${created.error}`);

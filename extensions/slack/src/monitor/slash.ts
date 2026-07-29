@@ -790,6 +790,7 @@ export async function registerSlackMonitorSlashCommands(params: {
           sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
         },
         ctxPayload,
+        memorySubjectCapability: slashIngress.memorySubjectCapability,
         replyPipeline: {
           transformReplyPayload: (payload) => {
             if (payload.isReasoning === true) {

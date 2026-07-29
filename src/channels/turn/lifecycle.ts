@@ -1,6 +1,8 @@
 import { dispatchInboundMessageWithRoutedChannelDispatcher } from "../../auto-reply/dispatch.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { prepareChannelIngressSessionMemorySubjectSeed } from "../../auto-reply/reply/channel-memory-subject.js";
 import type { DispatchFromConfigResult } from "../../auto-reply/reply/dispatch-from-config.types.js";
+import type { InternalGetReplyOptions } from "../../auto-reply/reply/get-reply.types.js";
 import type { ReplyDispatchKind } from "../../auto-reply/reply/reply-dispatcher.types.js";
 import { runWithSessionInitConflictRetry } from "../../auto-reply/reply/session-init-conflict-retry.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
@@ -93,17 +95,23 @@ export function assembleResolvedChannelTurn<
   return assembled;
 }
 
-function resolveAssembledReplyPipeline(
-  params: DispatchableChannelTurn,
-): Pick<AssembledChannelTurn, "dispatcherOptions" | "replyOptions"> {
+function resolveAssembledReplyPipeline(params: DispatchableChannelTurn): {
+  dispatcherOptions?: AssembledChannelTurn["dispatcherOptions"];
+  replyOptions?: Omit<InternalGetReplyOptions, "onBlockReply">;
+} {
   const turnAdoptionLifecycle =
     params.turnAdoptionLifecycle ?? params.replyOptions?.turnAdoptionLifecycle;
+  const memorySubjectSeed = prepareChannelIngressSessionMemorySubjectSeed(
+    params.memorySubjectCapability,
+  );
   if (!params.replyPipeline) {
     return {
       dispatcherOptions: params.dispatcherOptions,
-      replyOptions: turnAdoptionLifecycle
-        ? { ...params.replyOptions, turnAdoptionLifecycle }
-        : params.replyOptions,
+      replyOptions: {
+        ...params.replyOptions,
+        memorySubjectSeed,
+        ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
+      },
     };
   }
   const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
@@ -121,6 +129,7 @@ function resolveAssembledReplyPipeline(
     replyOptions: {
       onModelSelected,
       ...params.replyOptions,
+      memorySubjectSeed,
       ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
     },
   };

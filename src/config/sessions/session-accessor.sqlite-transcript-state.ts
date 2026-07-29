@@ -14,6 +14,7 @@ import {
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
+import { persistSessionMemorySubjectInTransaction } from "./session-memory-subject.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import {
   foldedSessionKeyAliasCandidates,
@@ -191,6 +192,13 @@ export function ensureTranscriptSessionRoot(
         }),
       ),
   );
+  persistSessionMemorySubjectInTransaction({
+    database,
+    sessionKey: scope.sessionKey,
+    sessionId: scope.sessionId,
+    sessionScope: "conversation",
+    now: updatedAt,
+  });
 }
 
 export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId: string): number {

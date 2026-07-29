@@ -1,6 +1,11 @@
 // Prepares parent-context fork metadata for guarded reply session initialization.
 import { buildMainSessionRecoveryClearPatch } from "../../agents/main-session-recovery-clear.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions.js";
+import {
+  prepareSessionMemorySubjectLineageSeed,
+  readCurrentSessionMemorySubject,
+  type ReplySessionInitializationPreparedEntry,
+} from "../../config/sessions/session-accessor.js";
 import { forkSessionFromParent, resolveParentForkDecision } from "./session-fork.js";
 
 export async function prepareReplySessionParentFork(params: {
@@ -12,17 +17,17 @@ export async function prepareReplySessionParentFork(params: {
   sessionKey: string;
   storePath: string;
   warn: (message: string) => void;
-}): Promise<SessionEntry> {
+}): Promise<ReplySessionInitializationPreparedEntry> {
   if (
     !params.parentSessionKey ||
     params.parentSessionKey === params.sessionKey ||
     params.alreadyForked
   ) {
-    return params.sessionEntry;
+    return { sessionEntry: params.sessionEntry };
   }
   const parentEntry = params.readEntry(params.parentSessionKey);
   if (!parentEntry?.sessionId) {
-    return params.sessionEntry;
+    return { sessionEntry: params.sessionEntry };
   }
   const decision = await resolveParentForkDecision({
     parentEntry,
@@ -36,7 +41,17 @@ export async function prepareReplySessionParentFork(params: {
       `skipping parent fork (parent too large): parentKey=${params.parentSessionKey} → sessionKey=${params.sessionKey} ` +
         `parentTokens=${decision.parentTokens} maxTokens=${decision.maxTokens}`,
     );
-    return { ...params.sessionEntry, forkedFromParent: true };
+    const parentSubject = readCurrentSessionMemorySubject({
+      agentId: params.agentId,
+      sessionKey: params.parentSessionKey,
+      storePath: params.storePath,
+    });
+    return {
+      sessionEntry: { ...params.sessionEntry, forkedFromParent: true },
+      ...(parentSubject
+        ? { memorySubjectSeed: prepareSessionMemorySubjectLineageSeed(parentSubject) }
+        : {}),
+    };
   }
   const fork = await forkSessionFromParent({
     parentEntry,
@@ -46,7 +61,7 @@ export async function prepareReplySessionParentFork(params: {
     storePath: params.storePath,
   });
   if (!fork) {
-    return params.sessionEntry;
+    return { sessionEntry: params.sessionEntry };
   }
   params.warn(
     `forking from parent session: parentKey=${params.parentSessionKey} → sessionKey=${params.sessionKey} ` +
@@ -68,5 +83,8 @@ export async function prepareReplySessionParentFork(params: {
     totalTokensFresh: false,
     totalTokensVersion: undefined,
   };
-  return forkedEntry;
+  return {
+    sessionEntry: forkedEntry,
+    memorySubjectSeed: fork.memorySubjectSeed,
+  };
 }

@@ -3,6 +3,7 @@ import {
   channelIngressRoutes,
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
+  type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { ChannelBotLoopProtectionConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
@@ -24,6 +25,10 @@ import { sendGoogleChatMessage } from "./api.js";
 import { buildGoogleChatGroupPolicyScope } from "./group-policy.js";
 import type { GoogleChatCoreRuntime } from "./monitor-types.js";
 import type { GoogleChatAnnotation, GoogleChatMessage, GoogleChatSpace } from "./types.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 function normalizeUserId(raw?: string | null): string {
   const trimmed = normalizeOptionalString(raw) ?? "";
@@ -212,6 +217,7 @@ export async function applyGoogleChatInboundAccessPolicy(params: {
 }): Promise<
   | {
       ok: true;
+      memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
       commandAuthorized: boolean | undefined;
       effectiveWasMentioned: boolean | undefined;
       groupBotLoopProtection: ChannelBotLoopProtectionConfig | undefined;
@@ -465,6 +471,7 @@ export async function applyGoogleChatInboundAccessPolicy(params: {
 
   return {
     ok: true,
+    memorySubjectCapability: resolvedAccess.memorySubjectCapability,
     commandAuthorized,
     effectiveWasMentioned,
     groupBotLoopProtection: groupEntry?.botLoopProtection,

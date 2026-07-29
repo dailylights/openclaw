@@ -4,6 +4,7 @@
  * Defines identity descriptors, resolver inputs, route access, and resolved access results.
  */
 import type { AccessGroupConfig } from "../../config/types.access-groups.js";
+import type { ChannelIngressMemorySubjectCapability } from "./memory-subject-capability.js";
 import type {
   AccessGroupMembershipFact,
   AccessGraphGate,
@@ -352,6 +353,8 @@ export type ChannelIngressActivationAccess = {
 
 /** Full ingress result returned by runtime resolvers. */
 export type ResolvedChannelMessageIngress = {
+  /** Opaque trusted carrier for the later logical-session subject commit. */
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   /** Redacted normalized state used as input to the decision engine. */
   state: ChannelIngressState;
   /** Ordered access graph plus final admission decision. */

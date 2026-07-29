@@ -27,6 +27,7 @@ import type {
 } from "../../infra/outbound/deliver.js";
 import type { MediaFact } from "../../media/media-facts.js";
 import type { InboundEventKind } from "../inbound-event/kind.js";
+import type { ChannelIngressMemorySubjectCapability } from "../message-access/memory-subject-capability.js";
 import type { CreateChannelReplyPipelineParams } from "../message/reply-pipeline.js";
 import type { MessageReceipt } from "../message/types.js";
 import type { InboundLastRouteUpdate, RecordInboundSession } from "../session.types.js";
@@ -307,6 +308,8 @@ export type AssembledChannelTurn = {
   routeSessionKey: string;
   storePath: string;
   ctxPayload: FinalizedMsgContext;
+  /** Opaque admitted-ingress proof consumed by core before reply session creation. */
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   recordInboundSession: RecordInboundSession;
   afterRecord?: () => void | Promise<void>;
   dispatchReplyWithBufferedBlockDispatcher: DispatchReplyWithBufferedBlockDispatcher;

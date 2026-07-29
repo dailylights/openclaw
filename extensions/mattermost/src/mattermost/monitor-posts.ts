@@ -431,6 +431,7 @@ export function createMattermostPostHandler(monitor: MattermostMonitorContext) {
     );
 
     await dispatchMattermostInboundTurn(monitor, {
+      memorySubjectCapability: accessDecision.memorySubjectCapability,
       post,
       rawText,
       ctxPayload,

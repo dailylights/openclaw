@@ -141,6 +141,7 @@ export async function dispatchSynologyChatInboundEvent(params: {
             sessionKey: resolved.route.sessionKey,
           },
           ctxPayload: msgCtx,
+          memorySubjectCapability: params.msg.memorySubjectCapability,
           delivery: {
             durable: () => ({
               to: sendUserId,

@@ -517,6 +517,9 @@ export async function getReplyFromConfig(
               internalOptsWithSkillFilter?.pinExpectedExistingSession === true,
             requestedSessionId: internalOptsWithSkillFilter?.requestedSessionId,
             resumeRequestedSession: internalOptsWithSkillFilter?.resumeRequestedSession,
+            ...(internalOptsWithSkillFilter?.memorySubjectSeed
+              ? { memorySubjectSeed: internalOptsWithSkillFilter.memorySubjectSeed }
+              : {}),
             signal: internalOptsWithSkillFilter?.abortSignal,
           }),
         );

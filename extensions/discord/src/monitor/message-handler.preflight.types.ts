@@ -1,5 +1,6 @@
 // Discord type declarations define plugin contracts.
 import type { InboundEventKind } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawConfig, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import type { SessionBindingRecord } from "openclaw/plugin-sdk/conversation-runtime";
 import type { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
@@ -13,6 +14,10 @@ import type { DiscordSenderIdentity } from "./sender-identity.js";
 
 export type { DiscordSenderIdentity } from "./sender-identity.js";
 import type { DiscordThreadChannel } from "./threading.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 type LoadedConfig = OpenClawConfig;
 export type RuntimeEnv = import("openclaw/plugin-sdk/runtime-env").RuntimeEnv;
@@ -63,6 +68,7 @@ export type DiscordMessagePreflightContext = DiscordMessagePreflightSharedFields
   // Keep one required receipt-time snapshot: queued processing must never
   // fall back to Discord's expiring attachment URLs.
   preparedMedia: DiscordMediaInfo[];
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
   wasMentioned: boolean;
 
   route: ReturnType<typeof resolveAgentRoute>;

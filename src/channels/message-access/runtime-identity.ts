@@ -184,3 +184,18 @@ export function createIdentitySubject(
   });
   return { identifiers };
 }
+
+/** Normalize only the descriptor's primary stable sender field for trusted consumers. */
+export function resolveStableChannelIngressSubjectId(
+  identity: ChannelIngressIdentityDescriptor,
+  input: ChannelIngressIdentitySubjectInput,
+): string | undefined {
+  if (input.stableId == null) {
+    return undefined;
+  }
+  const primary = identityFields(identity)[0];
+  if (!primary || primary.kind !== "stable-id") {
+    return undefined;
+  }
+  return normalizeFieldValue(primary, String(input.stableId), "subject") ?? undefined;
+}

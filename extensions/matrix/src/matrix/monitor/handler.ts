@@ -263,6 +263,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       }
 
       const {
+        memorySubjectCapability,
         route: _route,
         hasExplicitSessionBinding,
         roomConfig,
@@ -466,6 +467,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
             accountId: _route.accountId,
             route: { agentId: _route.agentId, sessionKey: _route.sessionKey },
             ctxPayload,
+            memorySubjectCapability,
             botLoopProtection,
             record: {
               updateLastRoute: isDirectMessage

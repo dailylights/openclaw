@@ -13,6 +13,8 @@ export const FIRST_USE_STATE_INDEXES = ["execution_identity_contexts_run_created
 // lazy ensures run; fold them into the next natural schema-version bump.
 export const LAZY_ADDITIVE_STATE_TABLES = [
   ...FIRST_USE_STATE_TABLES,
+  "memory_identity_bindings",
+  "memory_principals",
   "model_catalog_remote",
   "sidebar_sections",
   "skill_workshop_proposal_events",
@@ -20,7 +22,14 @@ export const LAZY_ADDITIVE_STATE_TABLES = [
   "skill_workshop_proposal_rollbacks",
   "skill_workshop_proposals",
 ] as const;
-export const LAZY_ADDITIVE_STATE_INDEXES = [...FIRST_USE_STATE_INDEXES] as const;
+export const LAZY_ADDITIVE_STATE_INDEXES = [
+  ...FIRST_USE_STATE_INDEXES,
+  "idx_memory_identity_bindings_lookup",
+  "idx_memory_identity_bindings_principal",
+  "idx_memory_principals_merge_head",
+  "idx_memory_principals_opaque_subject",
+  "idx_memory_principals_user_profile",
+] as const;
 /** Maximum time one synchronous SQLite call may wait for a lock. */
 export const OPENCLAW_SQLITE_BUSY_TIMEOUT_MS = 5_000;
 /** User-facing guide for schema refusals; lives here so error sites avoid import cycles. */

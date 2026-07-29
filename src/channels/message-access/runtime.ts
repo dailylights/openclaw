@@ -10,6 +10,7 @@ import {
 import type { PairingChannel } from "../../pairing/pairing-store.types.js";
 import { decideChannelIngress } from "./decision.js";
 import { resolveChannelIngressEffectiveAllowFromLists } from "./effective-allow-from.js";
+import { createChannelIngressMemorySubjectCapability } from "./memory-subject-capability.js";
 import {
   allReferencedAccessGroupNames,
   normalizeEffectiveEntries,
@@ -19,6 +20,7 @@ import {
   createIdentityAdapter,
   createIdentitySubject,
   defineStableChannelIngressIdentity,
+  resolveStableChannelIngressSubjectId,
 } from "./runtime-identity.js";
 import type {
   ChannelMessageIngressCommandInput,
@@ -661,6 +663,13 @@ export async function resolveChannelMessageIngress(
   const commandAccess = projectCommandAccess({ ingress, policy });
   const activationAccess = projectActivationAccess({ ingress });
   return {
+    memorySubjectCapability: createChannelIngressMemorySubjectCapability({
+      channel: channelId,
+      accountId: params.accountId,
+      conversation: params.conversation,
+      ingress,
+      stableSenderId: resolveStableChannelIngressSubjectId(params.identity, params.subject),
+    }),
     state,
     ingress,
     senderAccess,

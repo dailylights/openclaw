@@ -5,6 +5,7 @@ import {
   shouldAckReaction as shouldAckReactionGate,
 } from "openclaw/plugin-sdk/channel-feedback";
 import { logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type {
   TelegramDirectConfig,
   TelegramGroupConfig,
@@ -46,6 +47,7 @@ import {
 } from "./conversation-route.js";
 import { enforceTelegramDmAccess } from "./dm-access.js";
 import { evaluateTelegramGroupBaseAccess } from "./group-access.js";
+import { resolveTelegramAdmittedMessageMemorySubjectCapability } from "./ingress.js";
 import {
   buildTelegramStatusReactionVariants,
   type TelegramReactionEmoji,
@@ -55,6 +57,10 @@ import {
   resolveTelegramStatusReactionEmojis,
 } from "./status-reaction-variants.js";
 import { getTopicName, resolveTopicNameCacheScope, updateTopicName } from "./topic-name-cache.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 export type {
   BuildTelegramMessageContextParams,
@@ -113,6 +119,7 @@ export type TelegramMessageContext = {
   reactionApi: TelegramReactionApi | null;
   statusReactionController: TelegramStatusReactionController | null;
   accountId: string;
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
 };
 
 export const buildTelegramMessageContext = async ({
@@ -480,6 +487,15 @@ export const buildTelegramMessageContext = async ({
     return null;
   }
 
+  const memorySubjectCapability = await resolveTelegramAdmittedMessageMemorySubjectCapability({
+    accountId: account.accountId,
+    cfg,
+    isGroup,
+    chatId,
+    threadId: replyThreadId,
+    stableSenderId: senderId || String(chatId),
+  });
+
   // Send the first typing cue before expensive context/session construction,
   // but only after intake has accepted the message as a non-room-event turn.
   if (bodyResult.inboundEventKind !== "room_event") {
@@ -663,5 +679,6 @@ export const buildTelegramMessageContext = async ({
     reactionApi,
     statusReactionController,
     accountId: account.accountId,
+    memorySubjectCapability,
   };
 };

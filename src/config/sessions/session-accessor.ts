@@ -19,6 +19,7 @@ export type {
   LogicalSessionAccessScope,
   ParentForkedSessionTranscript,
   ReplySessionInitializationCommitContext,
+  ReplySessionInitializationPreparedEntry,
   ReplySessionInitializationCommitResult,
   ReplySessionInitializationSnapshot,
   ResetSessionEntryLifecycleParams,
@@ -228,6 +229,27 @@ export {
   type ClosedTranscriptTurnReadResult,
 } from "./session-accessor.transcript-range.js";
 export { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-anchor.js";
+export {
+  readCurrentSessionMemorySubject,
+  readCurrentSessionMemorySubjectAuthority,
+} from "./session-memory-subject-access.js";
+export {
+  prepareAmbiguousSessionMemorySubjectSeed,
+  prepareChannelBindingSessionMemorySubjectSeed,
+  prepareConversationSessionMemorySubjectSeed,
+  prepareExplicitSessionMemorySubjectSeed,
+  prepareGatewayProfileSessionMemorySubjectSeed,
+  prepareSessionMemorySubjectLineageSeed,
+  resolveSessionMemorySubjectAuthority,
+  InvalidSessionMemorySubjectSeedError,
+  SessionMemorySubjectReboundError,
+} from "./session-memory-subject.js";
+export type {
+  SessionMemoryScope,
+  SessionMemorySubjectAuthority,
+  TrustedSessionMemorySubjectSeed,
+  TrustedSessionMemorySubjectSnapshot,
+} from "./session-memory-subject.js";
 export {
   isSessionTranscriptProjectionUnavailableError,
   readRecentSessionTranscriptActiveEvents,

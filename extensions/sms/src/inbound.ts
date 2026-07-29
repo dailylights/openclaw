@@ -264,6 +264,7 @@ export async function dispatchSmsInboundEvent(params: {
             accountId: params.account.accountId,
             route: { agentId: route.agentId, sessionKey },
             ctxPayload,
+            memorySubjectCapability: auth.memorySubjectCapability,
             delivery: {
               durable: () => ({
                 to: from,

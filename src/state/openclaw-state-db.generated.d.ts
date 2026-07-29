@@ -851,6 +851,39 @@ export interface MeetingTranscriptUtterances {
   utterance_id: string | null;
 }
 
+export interface MemoryIdentityBindings {
+  account_id: string;
+  adapter_id: string;
+  assurance: string;
+  binding_id: string;
+  channel: string;
+  created_at: number;
+  created_by: string;
+  evidence_revision: string;
+  expires_at: number | null;
+  principal_id: string;
+  revocation_reason: string | null;
+  revoked_at: number | null;
+  revoked_by: string | null;
+  sender_lookup_hmac: string;
+  verification_method: string;
+}
+
+export interface MemoryPrincipals {
+  created_at: number;
+  evidence_revision: string;
+  expires_at: number | null;
+  issuer: string | null;
+  kind: string;
+  merged_into: string | null;
+  principal_id: string;
+  revoked_at: number | null;
+  state: string;
+  subject_key: string | null;
+  updated_at: number;
+  user_profile_id: string | null;
+}
+
 export interface MigrationRuns {
   finished_at: number | null;
   id: string;
@@ -1621,6 +1654,8 @@ export interface DB {
   meeting_transcript_sessions: MeetingTranscriptSessions;
   meeting_transcript_summaries: MeetingTranscriptSummaries;
   meeting_transcript_utterances: MeetingTranscriptUtterances;
+  memory_identity_bindings: MemoryIdentityBindings;
+  memory_principals: MemoryPrincipals;
   migration_runs: MigrationRuns;
   migration_sources: MigrationSources;
   model_capability_cache: ModelCapabilityCache;

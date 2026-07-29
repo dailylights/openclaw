@@ -1,4 +1,5 @@
 import { resolveInboundMentionDecision } from "openclaw/plugin-sdk/channel-inbound";
+import type { ResolvedChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { buildInboundHistoryFromEntries } from "openclaw/plugin-sdk/reply-history";
 import { isMatrixMediaSizeLimitError } from "../media-errors.js";
@@ -30,6 +31,48 @@ import { resolveMatrixInboundRoute } from "./route.js";
 import { logInboundDrop } from "./runtime-api.js";
 import type { MatrixRawEvent, RoomMessageEventContent } from "./types.js";
 
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
+
+type MatrixIngressContentResult =
+  | undefined
+  | { deferredPrefix: MatrixIngressAccessParams }
+  | {
+      memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
+      route: ReturnType<typeof resolveMatrixInboundRoute>["route"];
+      hasExplicitSessionBinding: boolean;
+      roomConfig: MatrixIngressAccessResult["roomConfig"];
+      isDirectMessage: boolean;
+      isRoom: boolean;
+      shouldRequireMention: boolean;
+      wasMentioned: boolean;
+      effectiveWasMentioned: boolean;
+      shouldBypassMention: boolean;
+      canDetectMention: boolean;
+      commandAuthorized: boolean;
+      inboundHistory: ReturnType<typeof buildInboundHistoryFromEntries>;
+      senderName: string;
+      bodyText: string;
+      commandBodyText: string;
+      media: {
+        path: string;
+        contentType?: string;
+        placeholder: string;
+      } | null;
+      preflightAudioTranscript: string | undefined;
+      locationPayload: MatrixIngressAccessResult["locationPayload"];
+      messageId: string;
+      triggerSnapshot:
+        | ReturnType<ReturnType<typeof createRoomHistoryTracker>["prepareTrigger"]>
+        | undefined;
+      threadRootId: MatrixIngressAccessResult["threadRootId"];
+      thread: MatrixIngressAccessResult["thread"];
+      botLoopProtection: MatrixIngressAccessResult["botLoopProtection"];
+      effectiveGroupAllowFrom: MatrixIngressAccessResult["effectiveGroupAllowFrom"];
+      effectiveRoomUsers: MatrixIngressAccessResult["effectiveRoomUsers"];
+    };
+
 export async function resolveMatrixIngressContent(config: {
   handler: MatrixHandlerRuntimeConfig;
   params: MatrixIngressAccessParams;
@@ -42,7 +85,7 @@ export async function resolveMatrixIngressContent(config: {
   senderId: string;
   roomHistoryTracker: ReturnType<typeof createRoomHistoryTracker>;
   commitInboundEventIfClaimed: () => Promise<void>;
-}) {
+}): Promise<MatrixIngressContentResult> {
   const {
     handler,
     params: paramsLocal,
@@ -519,8 +562,11 @@ export async function resolveMatrixIngressContent(config: {
       })
     : undefined;
   const triggerSnapshot = preparedTrigger;
+  const memorySubjectCapability: ChannelIngressMemorySubjectCapability | undefined =
+    accessState.messageIngress.memorySubjectCapability;
 
   return {
+    memorySubjectCapability,
     route: _route,
     hasExplicitSessionBinding,
     roomConfig,

@@ -38,6 +38,10 @@ import type {
 } from "./session-accessor.types.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { inheritSessionSelection } from "./session-entry-selection.js";
+import {
+  prepareCurrentSessionMemorySubjectLineageSeedInTransaction,
+  type TrustedSessionMemorySubjectSeed,
+} from "./session-memory-subject.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
@@ -253,9 +257,18 @@ function mutateSqliteSessionAtMessageInTransaction(
     targetKey: string;
   },
 ): SessionTranscriptMutationResult {
-  const currentEntry = readSessionEntryRow(database, params.sourceKey)?.entry;
-  if (!currentEntry?.sessionId) {
+  const currentRow = readSessionEntryRow(database, params.sourceKey);
+  if (!currentRow?.entry.sessionId) {
     return { status: "missing-session" };
+  }
+  const currentEntry = currentRow.entry;
+  const memorySubjectSeed: TrustedSessionMemorySubjectSeed | undefined =
+    prepareCurrentSessionMemorySubjectLineageSeedInTransaction(
+      database,
+      currentRow.row.session_key,
+    );
+  if (!memorySubjectSeed) {
+    return { status: "failed" };
   }
   const events = loadSqliteTranscriptEventsFromDatabase(database, currentEntry.sessionId);
   const cut = params.mode === "switch" ? undefined : resolveMessageCut(events, params.entryId);
@@ -318,7 +331,7 @@ function mutateSqliteSessionAtMessageInTransaction(
       ? buildSessionCreationStamp(params.creation)
       : {}),
   };
-  writeSessionEntry(database, params.targetKey, nextEntry);
+  writeSessionEntry(database, params.targetKey, nextEntry, { memorySubjectSeed });
   return {
     status: "created",
     key: params.targetKey,

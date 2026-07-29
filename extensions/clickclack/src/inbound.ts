@@ -257,6 +257,7 @@ export async function handleClickClackInbound(params: {
       accountId: params.account.accountId,
       route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
       ctxPayload,
+      memorySubjectCapability: access.memorySubjectCapability,
       toolsAllow: params.account.toolsAllow,
       replyOptions: {
         ...(runId ? { runId } : {}),

@@ -12,7 +12,13 @@ import {
 } from "./inherited-tool-deny.js";
 import { getSubagentSpawnDeps } from "./subagent-spawn-deps.js";
 import { splitModelRef } from "./subagent-spawn-plan.js";
-import { resolveGatewaySessionStoreTarget, upsertSessionEntry } from "./subagent-spawn.runtime.js";
+import {
+  prepareAmbiguousSessionMemorySubjectSeed,
+  prepareSessionMemorySubjectLineageSeed,
+  readCurrentSessionMemorySubject,
+  resolveGatewaySessionStoreTarget,
+  upsertSessionEntry,
+} from "./subagent-spawn.runtime.js";
 
 function buildDirectChildSessionPatch(patch: Record<string, unknown>): Partial<SessionEntry> {
   const entry: Partial<SessionEntry> = {};
@@ -107,6 +113,7 @@ export async function createInitialSubagentSession(params: {
   childSessionKey: string;
   incognito: boolean;
   requesterInternalKey: string;
+  requesterAgentId: string;
   completionOwnerSessionKey: string;
   spawnedWorkspaceDir?: string;
   spawnedCwd?: string;
@@ -143,6 +150,21 @@ export async function createInitialSubagentSession(params: {
     lifecycleRevision: randomUUID(),
   };
   try {
+    // Capture parent provenance before opening the child database transaction.
+    // Cross-agent and incognito children must never read shared state from that transaction.
+    const parentTarget = resolveGatewaySessionStoreTarget({
+      cfg: params.cfg,
+      key: params.requesterInternalKey,
+      agentId: params.requesterAgentId,
+    });
+    const parentSubject = readCurrentSessionMemorySubject({
+      agentId: parentTarget.agentId,
+      sessionKey: parentTarget.canonicalKey,
+      storePath: parentTarget.storePath,
+    });
+    const memorySubjectSeed = parentSubject
+      ? prepareSessionMemorySubjectLineageSeed(parentSubject)
+      : prepareAmbiguousSessionMemorySubjectSeed("unbound");
     const target = params.incognito
       ? {
           agentId: params.targetAgentId,
@@ -167,6 +189,7 @@ export async function createInitialSubagentSession(params: {
           actor: { type: "agent", id: params.requesterInternalKey },
         }),
       },
+      { memorySubjectSeed },
     );
     return { status: "ok", entry: entry ?? undefined };
   } catch (err) {

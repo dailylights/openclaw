@@ -413,9 +413,11 @@ export function readSqliteSessionUpdatedAt(scope: SessionAccessScope): number | 
 export async function upsertSqliteSessionEntry(
   scope: SessionAccessScope,
   patch: Partial<SessionEntry>,
+  options: Pick<SqliteSessionEntryPatchOptions, "memorySubjectSeed"> = {},
 ): Promise<SessionEntry | null> {
   return await patchSqliteSessionEntry(scope, () => patch, {
     fallbackEntry: createFallbackSessionEntry(patch),
+    ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
   });
 }
 
@@ -610,6 +612,8 @@ async function patchSqliteSessionEntrySnapshot<TSnapshot>(
       const selectedPreviousEntry = params.existingEntry(fresh) ?? writeBase;
       writeSessionEntry(writeDatabase, sessionKey, next, {
         previousEntry: selectedPreviousEntry,
+        ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
+        memorySubjectAliasSourceKeys: legacyKeys,
       });
       if (params.rehomeWindows) {
         rehomeSqliteSessionWindows(writeDatabase, sessionKey, legacyKeys);

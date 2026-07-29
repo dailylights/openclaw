@@ -21,6 +21,7 @@ import type {
   SessionLifecycleTranscriptInfo,
   ReplySessionInitializationSnapshot,
   ReplySessionInitializationCommitContext,
+  ReplySessionInitializationPreparedEntry,
   ReplySessionInitializationCommitResult,
 } from "./session-accessor.types.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
@@ -138,7 +139,9 @@ export async function commitReplySessionInitialization(params: {
   onMaintenanceWarning?: (warning: SessionMaintenanceWarning) => void | Promise<void>;
   prepareSessionEntry?: (
     context: ReplySessionInitializationCommitContext,
-  ) => Promise<SessionEntry> | SessionEntry;
+  ) => Promise<ReplySessionInitializationPreparedEntry> | ReplySessionInitializationPreparedEntry;
+  /** Host-trusted subject used only when initialization creates the logical session. */
+  memorySubjectSeed?: import("./session-memory-subject.js").TrustedSessionMemorySubjectSeed;
   resetBoundaryReason?: import("./session-reset-boundary-event.js").SessionResetBoundaryReason;
   previousEntry?: SessionEntry;
   retiredEntry?: SessionEntryRetirement;
@@ -177,13 +180,14 @@ export async function commitReplySessionInitialization(params: {
     const entry = resolveSessionEntryFromStore({ store, sessionKey }).existing;
     return entry ? { ...entry } : undefined;
   };
-  const preparedSessionEntry = params.prepareSessionEntry
+  const prepared = params.prepareSessionEntry
     ? await params.prepareSessionEntry({
         ...(currentEntry ? { currentEntry } : {}),
         readEntry,
         sessionEntry: params.sessionEntry,
       })
-    : params.sessionEntry;
+    : { sessionEntry: params.sessionEntry };
+  const preparedSessionEntry = prepared.sessionEntry;
   const sessionEntry = resolveInitializedReplySessionEntry({
     agentId: params.agentId,
     ...(currentEntry ? { currentEntry } : {}),
@@ -201,6 +205,11 @@ export async function commitReplySessionInitialization(params: {
   const upserts: SessionEntryLifecycleUpsert[] = [
     {
       sessionKey: resolved.normalizedKey,
+      ...(prepared.memorySubjectSeed
+        ? { memorySubjectSeed: prepared.memorySubjectSeed }
+        : params.memorySubjectSeed
+          ? { memorySubjectSeed: params.memorySubjectSeed }
+          : {}),
       ...(params.resetBoundaryReason ? { resetBoundaryReason: params.resetBoundaryReason } : {}),
       buildEntry: async ({ store: currentStore }) => {
         const commitResolved = resolveSessionEntryFromStore({

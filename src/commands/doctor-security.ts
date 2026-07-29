@@ -352,6 +352,7 @@ export async function collectSecurityWarnings(
     allowFromPath: string;
     approveHint: string;
     normalizeEntry?: (raw: string) => string;
+    dmScopeRemediation: "per-channel-peer" | "per-account-channel-peer";
   }) => {
     const dmPolicy = params.dmPolicy;
     const policyPath = params.policyPath ?? `${params.allowFromPath}policy`;
@@ -389,8 +390,8 @@ export async function collectSecurityWarnings(
     if (dmScope === "main" && isMultiUserDm) {
       warnings.push(
         `- ${params.label} DMs: multiple senders share the main session; run: ` +
-          formatCliCommand('openclaw config set session.dmScope "per-channel-peer"') +
-          ' (or "per-account-channel-peer" for multi-account channels) to isolate sessions.',
+          formatCliCommand(`openclaw config set session.dmScope "${params.dmScopeRemediation}"`) +
+          " to isolate sessions.",
       );
     }
   };
@@ -402,7 +403,7 @@ export async function collectSecurityWarnings(
     if (!plugin.security) {
       continue;
     }
-    const { defaultAccountId, account, enabled, configured, diagnostics } =
+    const { accountIds, defaultAccountId, account, enabled, configured, diagnostics } =
       await resolveDefaultChannelAccountContext(plugin, cfg, {
         mode: "read_only",
         commandName: "doctor",
@@ -432,6 +433,7 @@ export async function collectSecurityWarnings(
         allowFromPath: dmPolicy.allowFromPath,
         approveHint: dmPolicy.approveHint,
         normalizeEntry: dmPolicy.normalizeEntry,
+        dmScopeRemediation: accountIds.length > 1 ? "per-account-channel-peer" : "per-channel-peer",
       });
     }
     if (plugin.security.collectWarnings) {

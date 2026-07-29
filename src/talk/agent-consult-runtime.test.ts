@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
+import { prepareAmbiguousSessionMemorySubjectSeed } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   emitTrustedDiagnosticEvent,
@@ -614,6 +615,7 @@ describe("realtime voice agent consult runtime", () => {
         const fork = {
           sessionId: "forked-session",
           sessionFile: testTempPath("forked.jsonl"),
+          memorySubjectSeed: prepareAmbiguousSessionMemorySubjectSeed("unbound"),
         };
         const parentEntry = sessionStore["agent:main:main"];
         if (!parentEntry?.sessionId) {

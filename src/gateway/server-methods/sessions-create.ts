@@ -17,6 +17,7 @@ import { insideGitCheckout } from "../../agents/worktrees/git.js";
 import { slugifyWorktreeTitle } from "../../agents/worktrees/name.js";
 import { managedWorktrees, WorktreeRepositoryError } from "../../agents/worktrees/service.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
+import { prepareGatewayProfileSessionMemorySubjectSeed } from "../../config/sessions/session-accessor.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -431,6 +432,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         parseAgentSessionKey(sessionKey ?? "")?.agentId ??
         resolveDefaultAgentId(cfg),
     );
+    const memorySubjectSeed = client?.authenticatedUserProfile?.profileId
+      ? prepareGatewayProfileSessionMemorySubjectSeed(client.authenticatedUserProfile.profileId)
+      : undefined;
     const captureCreatedSessionBaseline = async (created: {
       agentId: string;
       entry: SessionEntry;
@@ -496,6 +500,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       resetMainWhenUnspecified: !hasInitialTurn,
       commandSource: "webchat",
       creation: sessionCreation,
+      ...(memorySubjectSeed ? { memorySubjectSeed } : {}),
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       loadGatewayModelCatalog: () =>
         context.loadGatewayModelCatalog({ agentId: modelCatalogAgentId }),

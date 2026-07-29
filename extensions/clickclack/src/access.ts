@@ -4,6 +4,7 @@
  */
 import {
   resolveStableChannelMessageIngress,
+  type ResolvedChannelMessageIngress,
   type StableChannelIngressIdentityParams,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -18,6 +19,10 @@ import { resolveClickClackMentionFacts } from "./mention-facts.js";
 import { getClickClackRuntime } from "./runtime.js";
 import { buildClickClackTarget } from "./target.js";
 import type { ClickClackMessage, CoreConfig, ResolvedClickClackAccount } from "./types.js";
+
+type ChannelIngressMemorySubjectCapability = NonNullable<
+  ResolvedChannelMessageIngress["memorySubjectCapability"]
+>;
 
 const CHANNEL_ID = "clickclack" as const;
 
@@ -165,6 +170,7 @@ export type ClickClackInboundAccess = {
     hasAnyMention?: boolean;
   };
   preparedRoute: ClickClackPreparedInboundRoute;
+  memorySubjectCapability?: ChannelIngressMemorySubjectCapability;
 };
 
 /**
@@ -244,5 +250,6 @@ export async function resolveClickClackInboundAccess(params: {
     requireMention: effectiveGroupPolicy.requireMention,
     mentionFacts,
     preparedRoute,
+    memorySubjectCapability: resolved.memorySubjectCapability,
   };
 }

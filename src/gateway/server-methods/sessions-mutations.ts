@@ -12,6 +12,7 @@ import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model
 import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
 import {
   applySessionPatchProjection,
+  prepareGatewayProfileSessionMemorySubjectSeed,
   type SessionPatchProjectionSnapshot,
 } from "../../config/sessions/session-accessor.js";
 import { disableCronJobsBoundToSession } from "../../cron/job-session-bindings.js";
@@ -494,6 +495,9 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
     }
 
     const reason = p.reason === "new" ? "new" : "reset";
+    const memorySubjectSeed = client?.authenticatedUserProfile?.profileId
+      ? prepareGatewayProfileSessionMemorySubjectSeed(client.authenticatedUserProfile.profileId)
+      : undefined;
     const { performGatewaySessionReset } = await loadSessionsRuntimeModule();
     const result = await performGatewaySessionReset({
       key,
@@ -501,6 +505,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       reason,
       commandSource: "gateway:sessions.reset",
       creation: resolveOperatorSessionCreation(client),
+      ...(memorySubjectSeed ? { memorySubjectSeed } : {}),
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       assertAuthorizedInstance: sessionMutationAuthorization?.assertCurrent,
     });

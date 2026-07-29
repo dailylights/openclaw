@@ -11,7 +11,9 @@ import {
   deleteSessionEntryLifecycle,
   loadSessionEntry,
   loadTranscriptEvents,
+  prepareAmbiguousSessionMemorySubjectSeed,
   replaceSessionEntry,
+  upsertSessionEntry,
 } from "./session-accessor.js";
 import { planSqliteSessionLifecycleArtifactCleanup } from "./session-accessor.sqlite-lifecycle-state.js";
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite.js";
@@ -743,36 +745,40 @@ describe("SQLite lifecycle cleanup races", () => {
 
   it("rehomes a window retained through a surviving previousSessionId reference", async () => {
     const retainedSessionId = "retained-previous-session";
+    const ownerKey = "agent:main:window-owner";
     const survivorKey = "agent:main:window-survivor";
     const now = Date.now();
+    const sharedSubjectSeed = prepareAmbiguousSessionMemorySubjectSeed("unbound");
     const retainedEvent = {
       type: "session",
       id: retainedSessionId,
       content: "retained previous transcript",
     } as const;
-    await replaceSessionEntry(
-      { sessionKey: "agent:main:window-owner", storePath },
+    await upsertSessionEntry(
+      { sessionKey: ownerKey, storePath },
       { sessionId: retainedSessionId, updatedAt: now },
+      { memorySubjectSeed: sharedSubjectSeed },
     );
     await replaceSqliteTranscriptEvents(
-      { sessionKey: "agent:main:window-owner", sessionId: retainedSessionId, storePath },
+      { sessionKey: ownerKey, sessionId: retainedSessionId, storePath },
       [retainedEvent],
     );
-    await replaceSessionEntry(
+    await upsertSessionEntry(
       { sessionKey: survivorKey, storePath },
       {
         previousSessionId: retainedSessionId,
         sessionId: "current-survivor-session",
         updatedAt: now + 1,
       },
+      { memorySubjectSeed: sharedSubjectSeed },
     );
 
     const deleted = await deleteSessionEntryLifecycle({
       archiveTranscript: true,
       storePath,
       target: {
-        canonicalKey: "agent:main:window-owner",
-        storeKeys: ["agent:main:window-owner"],
+        canonicalKey: ownerKey,
+        storeKeys: [ownerKey],
       },
     });
 
@@ -790,5 +796,85 @@ describe("SQLite lifecycle cleanup races", () => {
         .prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
         .get(retainedSessionId),
     ).toEqual({ session_key: survivorKey });
+    expect(
+      database.db
+        .prepare(
+          "SELECT session_key, subject_revision FROM session_memory_subject_snapshots WHERE session_id = ?",
+        )
+        .get(retainedSessionId),
+    ).toEqual({
+      session_key: survivorKey,
+      subject_revision: sharedSubjectSeed.subjectRevision,
+    });
+  });
+
+  it("keeps an unproven retained window under its source tombstone", async () => {
+    const retainedSessionId = "unproven-previous-session";
+    const ownerKey = "agent:main:unproven-window-owner";
+    const survivorKey = "agent:main:unproven-window-survivor";
+    const ownerSubjectSeed = prepareAmbiguousSessionMemorySubjectSeed("unbound");
+    const survivorSubjectSeed = prepareAmbiguousSessionMemorySubjectSeed("unbound");
+    const now = Date.now();
+    const retainedEvent = {
+      type: "session",
+      id: retainedSessionId,
+      content: "unproven retained transcript",
+    } as const;
+    await upsertSessionEntry(
+      { sessionKey: ownerKey, storePath },
+      { sessionId: retainedSessionId, updatedAt: now },
+      { memorySubjectSeed: ownerSubjectSeed },
+    );
+    await replaceSqliteTranscriptEvents(
+      { sessionKey: ownerKey, sessionId: retainedSessionId, storePath },
+      [retainedEvent],
+    );
+    await upsertSessionEntry(
+      { sessionKey: survivorKey, storePath },
+      {
+        previousSessionId: retainedSessionId,
+        sessionId: "unproven-current-survivor",
+        updatedAt: now + 1,
+      },
+      { memorySubjectSeed: survivorSubjectSeed },
+    );
+
+    const deleted = await deleteSessionEntryLifecycle({
+      archiveTranscript: true,
+      storePath,
+      target: { canonicalKey: ownerKey, storeKeys: [ownerKey] },
+    });
+
+    expect(deleted.deleted).toBe(true);
+    expect(deleted.archivedTranscripts).toEqual([]);
+    expect(loadSessionEntry({ sessionKey: ownerKey, storePath })).toBeUndefined();
+    await expect(
+      loadTranscriptEvents({ sessionKey: ownerKey, sessionId: retainedSessionId, storePath }),
+    ).resolves.toEqual([retainedEvent]);
+    const databasePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+      agentId: "main",
+    }).path;
+    const database = openOpenClawAgentDatabase({ agentId: "main", path: databasePath });
+    expect(
+      database.db
+        .prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?")
+        .get(ownerKey),
+    ).toEqual({ current_session_id: retainedSessionId, entry_json: "{}" });
+    expect(
+      database.db
+        .prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
+        .get(retainedSessionId),
+    ).toEqual({ session_key: ownerKey });
+    expect(
+      database.db
+        .prepare(
+          "SELECT session_key, subject_revision FROM session_memory_subject_snapshots WHERE session_id = ?",
+        )
+        .get(retainedSessionId),
+    ).toEqual({
+      session_key: ownerKey,
+      subject_revision: ownerSubjectSeed.subjectRevision,
+    });
+    expect(ownerSubjectSeed.subjectRevision).not.toBe(survivorSubjectSeed.subjectRevision);
   });
 });

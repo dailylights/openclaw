@@ -150,6 +150,7 @@ export async function handleFeishuCommentEvent(
     return;
   }
 
+  let effectiveAuthorization = commentAuthorization;
   let effectiveCfg = params.cfg;
   const currentCfg = core.config.current() as ClawdbotConfig;
   if (currentCfg !== effectiveCfg) {
@@ -158,6 +159,7 @@ export async function handleFeishuCommentEvent(
       await rejectCommentAuthorization(currentAuthorization);
       return;
     }
+    effectiveAuthorization = currentAuthorization;
     effectiveCfg = currentCfg;
   }
   let route = core.channel.routing.resolveAgentRoute({
@@ -193,6 +195,7 @@ export async function handleFeishuCommentEvent(
         );
         return;
       }
+      effectiveAuthorization = refreshedAuthorization;
       effectiveCfg = dynamicResult.updatedCfg;
       route = core.channel.routing.resolveAgentRoute({
         cfg: dynamicResult.updatedCfg,
@@ -289,6 +292,7 @@ export async function handleFeishuCommentEvent(
           accountId: route.accountId,
           route: { agentId: route.agentId, sessionKey: commentSessionKey },
           ctxPayload,
+          memorySubjectCapability: effectiveAuthorization.ingress.memorySubjectCapability,
           record: {
             onRecordError: (err) => {
               error(

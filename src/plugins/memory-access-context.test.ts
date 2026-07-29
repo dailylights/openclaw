@@ -11,6 +11,23 @@ import {
 
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
 
+function createAuthoritativeSessionIdentity() {
+  return {
+    sessionId: "session-1",
+    sessionIdentityRevision: "session-revision-1",
+    subjectRevision: "subject-revision-1",
+    subject: {
+      version: 1 as const,
+      kind: "user" as const,
+      principalId: "principal-owner",
+      creationEvidence: {
+        kind: "gateway-profile" as const,
+        revision: "creation-revision-1",
+      },
+    },
+  };
+}
+
 function createFacts(): MemoryAccessContextFacts {
   return {
     contextId: "context-1",
@@ -93,10 +110,7 @@ function createFacts(): MemoryAccessContextFacts {
 }
 
 function createFactory() {
-  const readCurrentSessionIdentity = vi.fn(async () => ({
-    sessionId: "session-1",
-    sessionIdentityRevision: "session-revision-1",
-  }));
+  const readCurrentSessionIdentity = vi.fn(async () => createAuthoritativeSessionIdentity());
   return {
     create: createMemoryAccessContextFactory({ readCurrentSessionIdentity, now: () => NOW_MS }),
     readCurrentSessionIdentity,
@@ -227,12 +241,31 @@ describe("memory access context factory", () => {
     ).toBe(false);
   });
 
+  it("uses the authoritative persisted subject instead of caller identity fields", async () => {
+    const { create } = createFactory();
+    const context = await create({
+      ...createFacts(),
+      subjectRevision: "forged-subject-revision",
+      subject: {
+        version: 1,
+        kind: "system",
+        principalId: "principal-attacker",
+      },
+    });
+
+    expect(context.subjectRevision).toBe("subject-revision-1");
+    expect(context.subject).toEqual(createAuthoritativeSessionIdentity().subject);
+  });
+
   it("fails closed when the authoritative session mapping is absent or rebound", async () => {
     const facts = createFacts();
     for (const current of [
       null,
-      { sessionId: "session-2", sessionIdentityRevision: facts.sessionIdentityRevision },
-      { sessionId: facts.sessionId, sessionIdentityRevision: "session-revision-2" },
+      { ...createAuthoritativeSessionIdentity(), sessionId: "session-2" },
+      {
+        ...createAuthoritativeSessionIdentity(),
+        sessionIdentityRevision: "session-revision-2",
+      },
     ]) {
       const create = createMemoryAccessContextFactory({
         readCurrentSessionIdentity: vi.fn(async () => current),
@@ -306,8 +339,7 @@ describe("memory access context factory", () => {
   it("rejects a non-finite authoritative clock", async () => {
     const create = createMemoryAccessContextFactory({
       readCurrentSessionIdentity: vi.fn(async () => ({
-        sessionId: "session-1",
-        sessionIdentityRevision: "session-revision-1",
+        ...createAuthoritativeSessionIdentity(),
       })),
       now: () => Number.NaN,
     });
