@@ -130,6 +130,17 @@ describe("memory-core plugin runtime registration", () => {
     expect(command?.description).toContain("Enable or disable");
   });
 
+  it("forwards the complete Phase 2A authorization lifecycle through the lazy runtime", () => {
+    const runtime = registerMemoryCoreRuntime();
+
+    expect(runtime.authorization).toEqual(MEMORY_CORE_AUTHORIZATION_CAPABILITIES);
+    expect(runtime.writeAuthorized).toEqual(expect.any(Function));
+    expect(runtime.importAuthorized).toEqual(expect.any(Function));
+    expect(runtime.syncAuthorized).toEqual(expect.any(Function));
+    expect(runtime.exportAuthorized).toEqual(expect.any(Function));
+    expect(runtime.statusAuthorized).toEqual(expect.any(Function));
+  });
+
   it("registers the standing-intent tool and deterministic prompt hook", () => {
     const toolNames: string[] = [];
     const hooks: string[] = [];

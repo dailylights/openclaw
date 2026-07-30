@@ -6,6 +6,7 @@ import {
   MEMORY_AUTHORIZATION_CAPABILITY_NAMES,
 } from "../memory-host-sdk/host/authorization.js";
 import {
+  admitMemoryAuthorizationRuntime,
   admitMemoryAuthorizationReadRuntime,
   inspectMemoryAuthorizationRuntime,
 } from "./memory-authorization-runtime.js";
@@ -46,6 +47,7 @@ function createCompleteRuntime(): MemoryPluginRuntime {
   return {
     ...createLegacyRuntime(),
     authorization: COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES,
+    authorizationConformance: referenceMemoryAuthorizationConformanceAdapter,
     authorize: notCalled,
     searchAuthorized: notCalled,
     readAuthorized: notCalled,
@@ -197,6 +199,33 @@ describe("authorized memory read admission", () => {
       reasonCode: "backend-nonconforming",
     });
     await expect(admitMemoryAuthorizationReadRuntime(throwingPrefilter)).resolves.toEqual({
+      ok: false,
+      reasonCode: "backend-nonconforming",
+    });
+  });
+});
+
+describe("complete authorized memory admission", () => {
+  it("admits the full Phase 2A lifecycle only with every capability and method", async () => {
+    const admitted = await admitMemoryAuthorizationRuntime(createCompleteRuntime());
+
+    expect(admitted.ok).toBe(true);
+    if (!admitted.ok) {
+      throw new Error("expected complete authorized runtime");
+    }
+    expect(admitted.runtime.authorization).toEqual(COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES);
+    expect(admitted.runtime.writeAuthorized).toEqual(expect.any(Function));
+    expect(admitted.runtime.importAuthorized).toEqual(expect.any(Function));
+    expect(admitted.runtime.syncAuthorized).toEqual(expect.any(Function));
+    expect(admitted.runtime.exportAuthorized).toEqual(expect.any(Function));
+    expect(admitted.runtime.statusAuthorized).toEqual(expect.any(Function));
+  });
+
+  it("rejects a partial mutation surface even when the read contract conforms", async () => {
+    const partial = createCompleteRuntime();
+    delete (partial as { exportAuthorized?: unknown }).exportAuthorized;
+
+    await expect(admitMemoryAuthorizationRuntime(partial)).resolves.toEqual({
       ok: false,
       reasonCode: "backend-nonconforming",
     });

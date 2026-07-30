@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  AuthorizedMemoryMutation,
   AuthorizedMemoryPlan,
   AuthorizedResourceHandle,
   MemoryAccessContext,
@@ -88,17 +89,22 @@ describe("builtin authorized scoped memory runtime", () => {
 
   function createStore(
     params: {
-      defaultCapabilities?: readonly ("retrieve" | "read")[];
+      agentId?: string;
+      audienceId?: string;
+      authorityOwnerId?: string;
+      defaultCapabilities?: Parameters<
+        typeof createBuiltinScopedMemoryStore
+      >[0]["defaultCapabilities"];
       policyEntries?: Parameters<typeof createBuiltinScopedMemoryStore>[0]["policyEntries"];
     } = {},
   ) {
     return createBuiltinScopedMemoryStore({
-      agentId: "main",
+      agentId: params.agentId ?? "main",
       scopeKind: "user",
       audienceKind: "user",
-      audienceId: "principal-owner",
+      audienceId: params.audienceId ?? "principal-owner",
       authorityKind: "user",
-      authorityOwnerId: "principal-owner",
+      authorityOwnerId: params.authorityOwnerId ?? "principal-owner",
       defaultCapabilities: params.defaultCapabilities ?? ["retrieve", "read"],
       ...(params.policyEntries ? { policyEntries: params.policyEntries } : {}),
       actor: { kind: "human", id: "principal-owner" },
@@ -163,6 +169,548 @@ describe("builtin authorized scoped memory runtime", () => {
     expect(search.exposureReceipt.runExposureRevision).toBe(
       search.egressReceipt.runExposureRevision,
     );
+  });
+
+  it("commits a subject-selected remember through the pending-to-active lifecycle", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "append" });
+    const plan = await runtime.authorize(context);
+
+    const result = await runtime.writeAuthorized({
+      context,
+      plan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId: "mutation-remember-1",
+        idempotencyKey: "remember-key-1",
+        content: "authorized crimson memory",
+        contentType: "markdown",
+      },
+    });
+
+    expect(result).toMatchObject({
+      mutationId: "mutation-remember-1",
+      status: "committed",
+      policyRevision: plan.memoryPolicyRevision,
+      resourceHandle: {
+        planId: plan.planId,
+        contextFingerprint: context.contextFingerprint,
+      },
+    });
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(
+      database
+        .prepare("SELECT state, indexed_at FROM memory_write_intents WHERE mutation_id = ?")
+        .get("mutation-remember-1"),
+    ).toEqual({ state: "active", indexed_at: NOW_MS });
+    expect(
+      database
+        .prepare("SELECT decision, state FROM memory_audit_outbox WHERE operation = ?")
+        .get("append"),
+    ).toEqual({ decision: "committed", state: "delivered" });
+  });
+
+  it.each(["pending", "renamed", "activated", "indexed"] as const)(
+    "recovers a valid interrupted write after the %s boundary",
+    async (interruptionPoint) => {
+      const agentId = `recovery-${interruptionPoint}`;
+      createStore({
+        agentId,
+        defaultCapabilities: ["retrieve", "read", "append"],
+      });
+      const context = createContext({
+        agentId,
+        operation: "append",
+        sessionKey: `agent:${agentId}:main`,
+        sessionId: `session-${interruptionPoint}`,
+      });
+      const failingRuntime = createBuiltinScopedMemoryRuntime({
+        now: () => NOW_MS,
+        onMutationPhase: (phase) => {
+          if (phase === interruptionPoint) {
+            throw new Error(`interrupt-${phase}`);
+          }
+        },
+      });
+      const failingPlan = await failingRuntime.authorize(context);
+      await expect(
+        failingRuntime.writeAuthorized({
+          context,
+          plan: failingPlan,
+          mutation: {
+            version: 1,
+            kind: "remember",
+            mutationId: `mutation-${interruptionPoint}`,
+            idempotencyKey: `key-${interruptionPoint}`,
+            content: `recovery ${interruptionPoint} cobalt`,
+            contentType: "markdown",
+          },
+        }),
+      ).rejects.toThrow(`interrupt-${interruptionPoint}`);
+
+      const recoveryRuntime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+      const readContext = { ...context, operation: "read" as const };
+      const readPlan = await recoveryRuntime.authorize(readContext);
+      const recovered = await recoveryRuntime.searchAuthorized({
+        context: readContext,
+        plan: readPlan,
+        query: `recovery ${interruptionPoint}`,
+        limit: 1,
+      });
+
+      expect(recovered.value).toHaveLength(1);
+      const database = openOpenClawAgentDatabase({ agentId }).db;
+      expect(
+        database
+          .prepare("SELECT state, indexed_at FROM memory_write_intents WHERE mutation_id = ?")
+          .get(`mutation-${interruptionPoint}`),
+      ).toEqual({ state: "active", indexed_at: NOW_MS });
+      expect(
+        database
+          .prepare(
+            "SELECT decision, state FROM memory_audit_outbox WHERE intent_id = (SELECT intent_id FROM memory_write_intents WHERE mutation_id = ?)",
+          )
+          .get(`mutation-${interruptionPoint}`),
+      ).toEqual({ decision: "committed", state: "delivered" });
+    },
+  );
+
+  it("discards an interrupted staged artifact before it gains a durable catalog mapping", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+    const context = createContext({ operation: "append" });
+    const failingRuntime = createBuiltinScopedMemoryRuntime({
+      now: () => NOW_MS,
+      onMutationPhase: (phase) => {
+        if (phase === "staged") {
+          throw new Error("interrupt-staged");
+        }
+      },
+    });
+    const plan = await failingRuntime.authorize(context);
+
+    await expect(
+      failingRuntime.writeAuthorized({
+        context,
+        plan,
+        mutation: {
+          version: 1,
+          kind: "remember",
+          mutationId: "mutation-staged",
+          idempotencyKey: "key-staged",
+          content: "staged cobalt artifact",
+          contentType: "markdown",
+        },
+      }),
+    ).rejects.toThrow("interrupt-staged");
+
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(database.prepare("SELECT COUNT(*) AS count FROM memory_write_intents").get()).toEqual({
+      count: 0,
+    });
+    const recoveryRuntime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const readContext = { ...context, operation: "read" as const };
+    const readPlan = await recoveryRuntime.authorize(readContext);
+    await expect(
+      recoveryRuntime.searchAuthorized({
+        context: readContext,
+        plan: readPlan,
+        query: "staged cobalt",
+        limit: 1,
+      }),
+    ).resolves.toMatchObject({ value: [] });
+  });
+
+  it("treats an exact retry as one durable mutation", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "append" });
+    const plan = await runtime.authorize(context);
+    const mutation = {
+      version: 1 as const,
+      kind: "remember" as const,
+      mutationId: "mutation-idempotent",
+      idempotencyKey: "idempotency-key",
+      content: "idempotent cobalt artifact",
+      contentType: "markdown" as const,
+    };
+
+    await expect(runtime.writeAuthorized({ context, plan, mutation })).resolves.toMatchObject({
+      status: "committed",
+    });
+    await expect(runtime.writeAuthorized({ context, plan, mutation })).resolves.toMatchObject({
+      status: "unchanged",
+    });
+
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM memory_write_intents WHERE mutation_id = ?")
+        .get(mutation.mutationId),
+    ).toEqual({ count: 1 });
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM memory_resource_revisions WHERE lifecycle_state = ?",
+        )
+        .get("active"),
+    ).toEqual({ count: 1 });
+  });
+
+  it.each(["storeId", "ownerId", "audience", "placementHandle", "destinationHandle"] as const)(
+    "rejects a caller-selected %s destination field",
+    async (field) => {
+      createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+      const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+      const context = createContext({ operation: "append" });
+      const plan = await runtime.authorize(context);
+      const mutation = {
+        version: 1,
+        kind: "remember",
+        mutationId: `mutation-forged-${field}`,
+        idempotencyKey: `key-forged-${field}`,
+        content: "forged destination cobalt artifact",
+        contentType: "markdown",
+        [field]: "forged-destination",
+      } as unknown as AuthorizedMemoryMutation;
+
+      await expect(runtime.writeAuthorized({ context, plan, mutation })).rejects.toThrow(
+        "mutation placement is unavailable",
+      );
+    },
+  );
+
+  it("retries a failed audit delivery once and records the event idempotently", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "append" });
+    const plan = await runtime.authorize(context);
+    await runtime.writeAuthorized({
+      context,
+      plan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId: "mutation-audit-primer",
+        idempotencyKey: "audit-primer-key",
+        content: "audit primer cobalt artifact",
+        contentType: "markdown",
+      },
+    });
+    const stateDatabase = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"));
+    stateDatabase.exec(`
+      CREATE TRIGGER fail_memory_access_audit
+      BEFORE INSERT ON memory_access_audit
+      BEGIN
+        SELECT RAISE(ABORT, 'audit delivery failed');
+      END;
+    `);
+    try {
+      await runtime.writeAuthorized({
+        context,
+        plan,
+        mutation: {
+          version: 1,
+          kind: "remember",
+          mutationId: "mutation-audit-retry",
+          idempotencyKey: "audit-retry-key",
+          content: "audit retry cobalt artifact",
+          contentType: "markdown",
+        },
+      });
+      const agentDatabase = openOpenClawAgentDatabase({ agentId: "main" }).db;
+      expect(
+        agentDatabase
+          .prepare(
+            "SELECT state, attempts FROM memory_audit_outbox WHERE intent_id = (SELECT intent_id FROM memory_write_intents WHERE mutation_id = ?)",
+          )
+          .get("mutation-audit-retry"),
+      ).toEqual({ state: "pending", attempts: 1 });
+
+      stateDatabase.exec("DROP TRIGGER fail_memory_access_audit");
+      await runtime.authorize({ ...context, requestId: "request-audit-retry" });
+
+      const event = agentDatabase
+        .prepare(
+          "SELECT event_id, state, attempts FROM memory_audit_outbox WHERE intent_id = (SELECT intent_id FROM memory_write_intents WHERE mutation_id = ?)",
+        )
+        .get("mutation-audit-retry") as { event_id: string; state: string; attempts: number };
+      expect(event).toMatchObject({ state: "delivered", attempts: 2 });
+      expect(
+        stateDatabase
+          .prepare("SELECT COUNT(*) AS count FROM memory_access_audit WHERE event_id = ?")
+          .get(event.event_id),
+      ).toEqual({ count: 1 });
+    } finally {
+      stateDatabase.close();
+    }
+  });
+
+  it("tombstones the catalog before removing every indexed and file artifact", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append", "delete"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const appendContext = createContext({ operation: "append" });
+    const appendPlan = await runtime.authorize(appendContext);
+    const remembered = await runtime.writeAuthorized({
+      context: appendContext,
+      plan: appendPlan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId: "mutation-delete-source",
+        idempotencyKey: "delete-source-key",
+        content: "delete cobalt artifact",
+        contentType: "markdown",
+      },
+    });
+    const handle = remembered.resourceHandle;
+    if (!handle) {
+      throw new Error("expected remembered resource handle");
+    }
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const artifact = database.db
+      .prepare(
+        `SELECT root.path_key, revision.artifact_locator
+           FROM memory_resource_revisions AS revision
+           JOIN memory_resources AS resource ON resource.resource_id = revision.resource_id
+           JOIN memory_stores AS store ON store.store_id = resource.store_id
+           JOIN memory_storage_roots AS root ON root.storage_root_id = store.storage_root_id
+          WHERE revision.revision_id = ?`,
+      )
+      .get(handle.resourceRevision) as { path_key: string; artifact_locator: string };
+    const artifactPath = resolveBuiltinScopedMemoryArtifactPath({
+      databasePath: database.path,
+      pathKey: artifact.path_key,
+      artifactLocator: artifact.artifact_locator,
+    });
+    const deleteContext = { ...appendContext, operation: "delete" as const };
+    const deletePlan = await runtime.authorize(deleteContext);
+
+    await runtime.writeAuthorized({
+      context: deleteContext,
+      plan: deletePlan,
+      mutation: {
+        version: 1,
+        kind: "tombstone",
+        mutationId: "mutation-delete-1",
+        idempotencyKey: "delete-key-1",
+        target: handle,
+      },
+    });
+
+    expect(
+      database.db
+        .prepare("SELECT lifecycle_state FROM memory_resource_revisions WHERE revision_id = ?")
+        .get(handle.resourceRevision),
+    ).toEqual({ lifecycle_state: "tombstoned" });
+    expect(
+      database.db
+        .prepare("SELECT COUNT(*) AS count FROM memory_scoped_chunks WHERE revision_id = ?")
+        .get(handle.resourceRevision),
+    ).toEqual({ count: 0 });
+    expect(fs.existsSync(artifactPath)).toBe(false);
+    const readContext = { ...appendContext, operation: "read" as const };
+    const readPlan = await runtime.authorize(readContext);
+    await expect(
+      runtime.readAuthorized({ context: readContext, plan: readPlan, handle }),
+    ).rejects.toThrow("revision is unavailable");
+  });
+
+  it("authorizes import, export, sync, and status without caller-selected stores", async () => {
+    createStore({
+      defaultCapabilities: ["retrieve", "read", "append", "import", "export", "sync", "status"],
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const appendContext = createContext({ operation: "append" });
+    const appendPlan = await runtime.authorize(appendContext);
+    const remembered = await runtime.writeAuthorized({
+      context: appendContext,
+      plan: appendPlan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId: "mutation-export-source",
+        idempotencyKey: "export-source-key",
+        content: "export amber artifact",
+        contentType: "markdown",
+      },
+    });
+    const handle = remembered.resourceHandle;
+    if (!handle) {
+      throw new Error("expected remembered resource handle");
+    }
+    const importContext = { ...appendContext, operation: "import" as const };
+    const importPlan = await runtime.authorize(importContext);
+    const imported = await runtime.importAuthorized({
+      context: importContext,
+      plan: importPlan,
+      mutation: {
+        version: 1,
+        kind: "import",
+        mutationId: "mutation-import-1",
+        idempotencyKey: "import-key-1",
+        content: "imported amber artifact",
+        contentType: "markdown",
+      },
+    });
+    expect(imported.status).toBe("committed");
+    const exportContext = { ...appendContext, operation: "export" as const };
+    const exportPlan = await runtime.authorize(exportContext);
+    const exported = await runtime.exportAuthorized({
+      context: exportContext,
+      plan: exportPlan,
+      handles: [handle],
+    });
+    expect(JSON.parse(exported.value.payload)).toEqual([
+      { revisionId: handle.resourceRevision, content: "export amber artifact" },
+    ]);
+    expect(exported.exposureReceipt.exposedRevisionHandles).toEqual([handle.resourceRevision]);
+    const syncContext = { ...appendContext, operation: "sync" as const };
+    const syncPlan = await runtime.authorize(syncContext);
+    await expect(
+      runtime.syncAuthorized({ context: syncContext, plan: syncPlan }),
+    ).resolves.toMatchObject({
+      value: { status: "completed" },
+    });
+    const statusContext = { ...appendContext, operation: "status" as const };
+    const statusPlan = await runtime.authorize(statusContext);
+    await expect(
+      runtime.statusAuthorized({ context: statusContext, plan: statusPlan }),
+    ).resolves.toMatchObject({
+      value: { backend: "builtin", files: 2 },
+    });
+  });
+
+  it("does not expose an inaccessible store through status counts", async () => {
+    const allowedStore = createStore({ defaultCapabilities: ["retrieve", "read", "status"] });
+    const hiddenStore = createStore({
+      audienceId: "principal-other",
+      authorityOwnerId: "principal-other",
+      defaultCapabilities: ["retrieve", "read", "status"],
+    });
+    createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: allowedStore,
+      logicalLocator: "visible-status.md",
+      content: "visible cobalt status",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 2_000,
+    });
+    createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: hiddenStore,
+      logicalLocator: "hidden-status.md",
+      content: "hidden cobalt status",
+      actor: { kind: "human", id: "principal-other" },
+      nowMs: 2_001,
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "status" });
+    const plan = await runtime.authorize(context);
+
+    await expect(runtime.statusAuthorized({ context, plan })).resolves.toMatchObject({
+      value: { files: 1, custom: { mounts: 1, resources: 1 } },
+    });
+  });
+
+  it("quarantines an unmapped watcher artifact before it can become searchable", async () => {
+    const store = createStore();
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const root = database.db
+      .prepare(
+        `SELECT root.path_key
+           FROM memory_stores AS store
+           JOIN memory_storage_roots AS root ON root.storage_root_id = store.storage_root_id
+          WHERE store.store_id = ?`,
+      )
+      .get(store.storeId) as { path_key: string };
+    const probe = resolveBuiltinScopedMemoryArtifactPath({
+      databasePath: database.path,
+      pathKey: root.path_key,
+      artifactLocator: "r1_aaaaaaaaaaaaaaaaaaaaaaaa.md",
+    });
+    const orphanPath = path.join(path.dirname(probe), "watcher-unmapped.md");
+    fs.writeFileSync(orphanPath, "unmapped watcher cobalt", "utf8");
+
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext();
+    const plan = await runtime.authorize(context);
+    const result = await runtime.searchAuthorized({
+      context,
+      plan,
+      query: "watcher cobalt",
+      limit: 1,
+    });
+
+    expect(result.value).toEqual([]);
+    expect(fs.existsSync(orphanPath)).toBe(false);
+    expect(
+      fs.readdirSync(path.join(path.dirname(path.dirname(orphanPath)), ".quarantine")),
+    ).toHaveLength(1);
+  });
+
+  it("quarantines a corrupted active artifact and removes its search eligibility", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const appendContext = createContext({ operation: "append" });
+    const appendPlan = await runtime.authorize(appendContext);
+    const remembered = await runtime.writeAuthorized({
+      context: appendContext,
+      plan: appendPlan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId: "mutation-corrupt-active",
+        idempotencyKey: "corrupt-active-key",
+        content: "corrupt cobalt artifact",
+        contentType: "markdown",
+      },
+    });
+    const handle = remembered.resourceHandle;
+    if (!handle) {
+      throw new Error("expected remembered resource handle");
+    }
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const artifact = database.db
+      .prepare(
+        `SELECT root.path_key, revision.artifact_locator
+           FROM memory_resource_revisions AS revision
+           JOIN memory_resources AS resource ON resource.resource_id = revision.resource_id
+           JOIN memory_stores AS store ON store.store_id = resource.store_id
+           JOIN memory_storage_roots AS root ON root.storage_root_id = store.storage_root_id
+          WHERE revision.revision_id = ?`,
+      )
+      .get(handle.resourceRevision) as { path_key: string; artifact_locator: string };
+    const artifactPath = resolveBuiltinScopedMemoryArtifactPath({
+      databasePath: database.path,
+      pathKey: artifact.path_key,
+      artifactLocator: artifact.artifact_locator,
+    });
+    fs.writeFileSync(artifactPath, "corrupted active artifact", "utf8");
+
+    const recoveryRuntime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const readContext = { ...appendContext, operation: "read" as const };
+    const readPlan = await recoveryRuntime.authorize(readContext);
+    await expect(
+      recoveryRuntime.searchAuthorized({
+        context: readContext,
+        plan: readPlan,
+        query: "corrupt cobalt",
+        limit: 1,
+      }),
+    ).resolves.toMatchObject({ value: [] });
+    expect(
+      database.db
+        .prepare("SELECT state FROM memory_write_intents WHERE mutation_id = ?")
+        .get("mutation-corrupt-active"),
+    ).toEqual({ state: "quarantined" });
+    expect(
+      database.db
+        .prepare("SELECT COUNT(*) AS count FROM memory_scoped_chunks WHERE revision_id = ?")
+        .get(handle.resourceRevision),
+    ).toEqual({ count: 0 });
+    expect(fs.existsSync(artifactPath)).toBe(false);
   });
 
   it("applies deny precedence and policy-entry expiry", async () => {

@@ -283,6 +283,27 @@ CREATE INDEX IF NOT EXISTS idx_memory_identity_bindings_lookup
 CREATE INDEX IF NOT EXISTS idx_memory_identity_bindings_principal
   ON memory_identity_bindings(principal_id, revoked_at);
 
+-- Shared redacted audit sink for memory decisions. It deliberately contains
+-- identifiers, revisions, and hashes only: never memory content or queries.
+CREATE TABLE IF NOT EXISTS memory_access_audit (
+  event_id TEXT NOT NULL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  actor_ref TEXT NOT NULL,
+  subject_ref TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('committed', 'quarantined', 'tombstoned')),
+  reason_code TEXT NOT NULL,
+  resource_revision_id TEXT,
+  content_hash TEXT,
+  occurred_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_access_audit_agent_time
+  ON memory_access_audit(agent_id, occurred_at DESC, event_id);
+
 CREATE TABLE IF NOT EXISTS session_state_events (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   dedupe_key TEXT UNIQUE,

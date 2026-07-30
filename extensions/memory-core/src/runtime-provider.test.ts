@@ -40,12 +40,16 @@ vi.mock("./dreaming-state.js", () => ({
 import { createMemoryRuntime, memoryRuntime } from "./runtime-provider.js";
 
 describe("memoryRuntime", () => {
-  it("declares only the admitted Phase 1B read capabilities", () => {
+  it("declares the admitted Phase 2A mutation capabilities", () => {
     expect(memoryRuntime.authorization).toEqual(MEMORY_CORE_AUTHORIZATION_CAPABILITIES);
     expect(memoryRuntime.authorize).toEqual(expect.any(Function));
     expect(memoryRuntime.searchAuthorized).toEqual(expect.any(Function));
     expect(memoryRuntime.readAuthorized).toEqual(expect.any(Function));
-    expect(memoryRuntime.writeAuthorized).toBeUndefined();
+    expect(memoryRuntime.writeAuthorized).toEqual(expect.any(Function));
+    expect(memoryRuntime.importAuthorized).toEqual(expect.any(Function));
+    expect(memoryRuntime.syncAuthorized).toEqual(expect.any(Function));
+    expect(memoryRuntime.exportAuthorized).toEqual(expect.any(Function));
+    expect(memoryRuntime.statusAuthorized).toEqual(expect.any(Function));
   });
 
   it("passes the full host-run authorization conformance suite", async () => {

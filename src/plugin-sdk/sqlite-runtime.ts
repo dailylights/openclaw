@@ -5,6 +5,7 @@ export {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+export { writeMemoryAccessAudit } from "../state/memory-access-audit-schema.js";
 export {
   AGENT_SCOPED_MEMORY_SCHEMA_SQL,
   ensureOpenClawAgentScopedMemorySchema,

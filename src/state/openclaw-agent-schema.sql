@@ -906,6 +906,83 @@ BEGIN
   SELECT RAISE(ABORT, 'memory egress receipts cannot be deleted');
 END;
 
+-- A write intent is durable before its revision can become readable. The staged
+-- locator is an opaque basename below the owning store, never a user path.
+CREATE TABLE IF NOT EXISTS memory_write_intents (
+  intent_id TEXT NOT NULL PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  mutation_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  context_fingerprint TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  mutation_kind TEXT NOT NULL CHECK (mutation_kind IN ('remember', 'append', 'replace', 'delete', 'tombstone', 'derive', 'deposit', 'project', 'publish', 'import', 'sync', 'admin-reclassify')),
+  store_id TEXT NOT NULL,
+  resource_id TEXT,
+  pending_revision_id TEXT,
+  staged_locator TEXT,
+  final_locator TEXT,
+  content_hash TEXT,
+  content_bytes INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'renamed', 'active', 'quarantined', 'tombstoned')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  activated_at INTEGER,
+  indexed_at INTEGER,
+  FOREIGN KEY (store_id) REFERENCES memory_stores(store_id) ON DELETE RESTRICT,
+  FOREIGN KEY (resource_id) REFERENCES memory_resources(resource_id) ON DELETE RESTRICT,
+  FOREIGN KEY (pending_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  UNIQUE (agent_id, idempotency_key),
+  UNIQUE (agent_id, mutation_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_write_intents_recovery
+  ON memory_write_intents(agent_id, state, created_at, intent_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_write_intents_immutable_identity
+BEFORE UPDATE OF intent_id, idempotency_key, mutation_id, agent_id, request_id, run_id,
+  context_fingerprint, plan_id, mutation_kind, store_id, resource_id, pending_revision_id,
+  staged_locator, final_locator, content_hash, content_bytes
+ON memory_write_intents
+BEGIN
+  SELECT RAISE(ABORT, 'memory write intent identity is immutable');
+END;
+
+-- The outbox commits with the local lifecycle. Delivery is asynchronous and
+-- can never become a condition for an authorized mutation to succeed.
+CREATE TABLE IF NOT EXISTS memory_audit_outbox (
+  event_id TEXT NOT NULL PRIMARY KEY,
+  intent_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  actor_ref TEXT NOT NULL,
+  subject_ref TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  resource_revision_id TEXT,
+  content_hash TEXT,
+  decision TEXT NOT NULL CHECK (decision IN ('pending', 'committed', 'quarantined', 'tombstoned')),
+  reason_code TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'delivered')),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  delivered_at INTEGER,
+  FOREIGN KEY (intent_id) REFERENCES memory_write_intents(intent_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_audit_outbox_drain
+  ON memory_audit_outbox(agent_id, state, created_at, event_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_audit_outbox_immutable_identity
+BEFORE UPDATE OF event_id, intent_id, agent_id, request_id, run_id, actor_ref, subject_ref,
+  operation, resource_revision_id, content_hash, created_at
+ON memory_audit_outbox
+BEGIN
+  SELECT RAISE(ABORT, 'memory audit outbox identity is immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS memory_migrations (
   migration_id TEXT NOT NULL PRIMARY KEY,
   source_kind TEXT NOT NULL,

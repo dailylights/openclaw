@@ -14,6 +14,7 @@ export const FIRST_USE_STATE_INDEXES = ["execution_identity_contexts_run_created
 export const LAZY_ADDITIVE_STATE_TABLES = [
   ...FIRST_USE_STATE_TABLES,
   "memory_identity_bindings",
+  "memory_access_audit",
   "memory_principals",
   "model_catalog_remote",
   "sidebar_sections",

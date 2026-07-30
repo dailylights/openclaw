@@ -1203,23 +1203,23 @@ Shared:
 
 Phase 2A is complete only when all of the following are demonstrated:
 
-- [ ] Every durable mutation path for an enforced agent routes through
+- [x] Every durable mutation path for an enforced agent routes through
       `writeAuthorized`; no remember, file, watcher, import, export, sync,
       plugin, LanceDB, or Memory Wiki bypass remains.
-- [ ] The runtime, not model arguments, selects the target store, owner, and
+- [x] The runtime, not model arguments, selects the target store, owner, and
       maximum audience.
-- [ ] Pending, orphaned, ambiguous, and quarantined revisions are never
+- [x] Pending, orphaned, ambiguous, and quarantined revisions are never
       readable or indexed as active.
-- [ ] The stage -> pending commit -> rename/fsync -> activation commit -> index
+- [x] The stage -> pending commit -> rename/fsync -> activation commit -> index
       -> audit-outbox state machine survives interruption at every boundary.
-- [ ] Retries, duplicate requests, and recovery are idempotent and do not
+- [x] Retries, duplicate requests, and recovery are idempotent and do not
       create two active revisions.
-- [ ] Delete/tombstone removes read eligibility immediately and cannot leave a
+- [x] Delete/tombstone removes read eligibility immediately and cannot leave a
       readable FTS/vector/file artifact.
-- [ ] SQLite transaction callbacks perform no async work, filesystem access,
+- [x] SQLite transaction callbacks perform no async work, filesystem access,
       network access, plugin calls, or model calls.
-- [ ] Legacy/context-free writers remain blocked for enforced agents.
-- [ ] Focused write, crash-recovery, watcher, import/export, sync, and plugin
+- [x] Legacy/context-free writers remain blocked for enforced agents.
+- [x] Focused write, crash-recovery, watcher, import/export, sync, and plugin
       mutation tests pass.
 
 ### Rollback

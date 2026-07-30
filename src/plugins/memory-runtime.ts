@@ -4,15 +4,18 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { MemoryAccessContext } from "../memory-host-sdk/host/authorization.js";
 import { resolveUserPath } from "../utils.js";
 import { normalizePluginsConfig } from "./config-state.js";
+import { loadPluginRegistryHandle, resolvePluginRegistryLoadCacheKey } from "./loader.js";
 import {
   brandAuthorizedMemoryPlan,
   isTrustedMemoryAccessContext,
   MemoryAccessContextError,
 } from "./memory-access-context.js";
-import { admitMemoryAuthorizationReadRuntime } from "./memory-authorization-runtime.js";
+import {
+  admitMemoryAuthorizationReadRuntime,
+  admitMemoryAuthorizationRuntime,
+} from "./memory-authorization-runtime.js";
 import { emitMemoryAuthorizationShadowSurfaceInspection } from "./memory-authorization-shadow.js";
 import { isMemoryIsolationCutoverAgent } from "./memory-cutover.js";
-import { loadPluginRegistryHandle, resolvePluginRegistryLoadCacheKey } from "./loader.js";
 import {
   getMemoryRuntime,
   resolveMemoryCapabilityRegistration,
@@ -117,7 +120,9 @@ function ensureMemoryRuntime(params?: {
   const key = resolvePluginRegistryLoadCacheKey(loadOptions);
   if (standaloneMemoryRegistrySlot?.key === key) {
     const runtime = resolveMemoryRuntimeFromRegistry(standaloneMemoryRegistrySlot.registry);
-    return runtime ? toMemoryRuntimeOwner(runtime, standaloneMemoryRegistrySlot.registry) : undefined;
+    return runtime
+      ? toMemoryRuntimeOwner(runtime, standaloneMemoryRegistrySlot.registry)
+      : undefined;
   }
   const registry = loadPluginRegistryHandle(loadOptions);
   if (!registry) {
@@ -185,7 +190,8 @@ export function resolveActiveMemoryBackendConfig(params: { cfg: OpenClawConfig; 
 }
 
 /**
- * Acquires and authorizes the selected Phase 1B read runtime without touching the legacy manager.
+ * Acquires and authorizes the selected runtime without touching the legacy manager.
+ * Reads use the Phase 1B surface; later operations require the complete Phase 2A contract.
  * QMD remains unavailable until it supplies its own isolated conformance proof.
  */
 export async function authorizeActiveMemoryAccess(params: {
@@ -221,7 +227,10 @@ export async function authorizeActiveMemoryAccess(params: {
         error: "authorized memory backend unavailable",
       } as const;
     }
-    const admission = await admitMemoryAuthorizationReadRuntime(runtime);
+    const admission =
+      params.context.operation === "read" || params.context.operation === "retrieve"
+        ? await admitMemoryAuthorizationReadRuntime(runtime)
+        : await admitMemoryAuthorizationRuntime(runtime);
     if (!admission.ok) {
       return {
         runtime: null,

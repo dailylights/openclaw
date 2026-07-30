@@ -50,6 +50,23 @@ type MemoryAuthorizationRuntimeAdmission =
 
 const readAdmissionCache = new WeakMap<object, Promise<MemoryAuthorizationRuntimeAdmission>>();
 
+export type AdmittedAuthorizedMemoryRuntime = Readonly<AuthorizedMemoryRuntime>;
+
+type CompleteMemoryAuthorizationRuntimeAdmission =
+  | Readonly<{
+      ok: true;
+      runtime: AdmittedAuthorizedMemoryRuntime;
+    }>
+  | Readonly<{
+      ok: false;
+      reasonCode: "backend-nonconforming";
+    }>;
+
+const completeAdmissionCache = new WeakMap<
+  object,
+  Promise<CompleteMemoryAuthorizationRuntimeAdmission>
+>();
+
 type MemoryAuthorizationRuntimeInspection = Readonly<{
   version: 1;
   capabilityDeclaration: "missing" | "malformed" | "partial" | "complete";
@@ -167,5 +184,65 @@ export async function admitMemoryAuthorizationReadRuntime(
     return Object.freeze({ ok: true, runtime: admittedRuntime });
   })();
   readAdmissionCache.set(runtime, admission);
+  return await admission;
+}
+
+/** Admit every Phase 2A operation only when the selected backend implements the complete contract. */
+export async function admitMemoryAuthorizationRuntime(
+  runtime: unknown,
+): Promise<CompleteMemoryAuthorizationRuntimeAdmission> {
+  if (!isRecord(runtime)) {
+    return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+  }
+  const cached = completeAdmissionCache.get(runtime);
+  if (cached) {
+    return await cached;
+  }
+  const admission = (async (): Promise<CompleteMemoryAuthorizationRuntimeAdmission> => {
+    const authorization = runtime.authorization;
+    const authorizationConformance = runtime.authorizationConformance;
+    if (
+      !hasCompleteMemoryAuthorizationCapabilities(authorization) ||
+      AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES.some((name) => typeof runtime[name] !== "function") ||
+      !isConformanceAdapter(authorizationConformance)
+    ) {
+      return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+    }
+    try {
+      const report = await runMemoryAuthorizationConformanceSuite(authorizationConformance);
+      if (!report.ok) {
+        return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+      }
+    } catch {
+      return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+    }
+    const admittedRuntime: AdmittedAuthorizedMemoryRuntime = Object.freeze({
+      authorization: Object.freeze({ ...authorization }),
+      authorize: (runtime.authorize as AuthorizedMemoryRuntime["authorize"]).bind(runtime),
+      searchAuthorized: (
+        runtime.searchAuthorized as AuthorizedMemoryRuntime["searchAuthorized"]
+      ).bind(runtime),
+      readAuthorized: (runtime.readAuthorized as AuthorizedMemoryRuntime["readAuthorized"]).bind(
+        runtime,
+      ),
+      writeAuthorized: (runtime.writeAuthorized as AuthorizedMemoryRuntime["writeAuthorized"]).bind(
+        runtime,
+      ),
+      importAuthorized: (
+        runtime.importAuthorized as AuthorizedMemoryRuntime["importAuthorized"]
+      ).bind(runtime),
+      syncAuthorized: (runtime.syncAuthorized as AuthorizedMemoryRuntime["syncAuthorized"]).bind(
+        runtime,
+      ),
+      exportAuthorized: (
+        runtime.exportAuthorized as AuthorizedMemoryRuntime["exportAuthorized"]
+      ).bind(runtime),
+      statusAuthorized: (
+        runtime.statusAuthorized as AuthorizedMemoryRuntime["statusAuthorized"]
+      ).bind(runtime),
+    });
+    return Object.freeze({ ok: true, runtime: admittedRuntime });
+  })();
+  completeAdmissionCache.set(runtime, admission);
   return await admission;
 }

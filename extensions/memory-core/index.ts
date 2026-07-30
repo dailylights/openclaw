@@ -282,6 +282,26 @@ function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRunti
       const runtime = await loadRuntime();
       return await runtime.readAuthorized!(params);
     },
+    async writeAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.writeAuthorized!(params);
+    },
+    async importAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.importAuthorized!(params);
+    },
+    async syncAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.syncAuthorized!(params);
+    },
+    async exportAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.exportAuthorized!(params);
+    },
+    async statusAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.statusAuthorized!(params);
+    },
     async getMemorySearchManager(params) {
       if (isMemoryIsolationCutoverAgent(params.agentId)) {
         return { manager: null, error: "memory unavailable" };

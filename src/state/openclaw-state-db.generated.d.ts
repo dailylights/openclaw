@@ -851,6 +851,22 @@ export interface MeetingTranscriptUtterances {
   utterance_id: string | null;
 }
 
+export interface MemoryAccessAudit {
+  actor_ref: string;
+  agent_id: string;
+  content_hash: string | null;
+  decision: string;
+  event_id: string;
+  occurred_at: number;
+  operation: string;
+  reason_code: string;
+  received_at: number;
+  request_id: string;
+  resource_revision_id: string | null;
+  run_id: string;
+  subject_ref: string;
+}
+
 export interface MemoryIdentityBindings {
   account_id: string;
   adapter_id: string;
@@ -1654,6 +1670,7 @@ export interface DB {
   meeting_transcript_sessions: MeetingTranscriptSessions;
   meeting_transcript_summaries: MeetingTranscriptSummaries;
   meeting_transcript_utterances: MeetingTranscriptUtterances;
+  memory_access_audit: MemoryAccessAudit;
   memory_identity_bindings: MemoryIdentityBindings;
   memory_principals: MemoryPrincipals;
   migration_runs: MigrationRuns;

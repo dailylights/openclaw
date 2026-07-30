@@ -288,32 +288,32 @@ type AuthorizedMemoryContentMutation = Readonly<{
 export type AuthorizedMemoryMutation =
   | (AuthorizedMemoryContentMutation &
       Readonly<{
+        /** Creates a session-subject default resource; callers cannot select its store or owner. */
+        kind: "remember";
+      }>)
+  | (AuthorizedMemoryContentMutation &
+      Readonly<{
         kind: "append" | "replace";
         target: AuthorizedResourceHandle;
       }>)
   | (AuthorizedMemoryContentMutation &
       Readonly<{
         kind: "import" | "deposit";
-        placementHandle: string;
       }>)
   | (AuthorizedMemoryContentMutation &
       Readonly<{
         kind: "derive";
-        placementHandle: string;
         sourceHandles: readonly AuthorizedResourceHandle[];
         sourcePolicySetId: string;
       }>)
+  | (AuthorizedMemoryContentMutation &
+      Readonly<{
+        kind: "project" | "publish";
+        sourceHandles: readonly AuthorizedResourceHandle[];
+      }>)
   | Readonly<{
       version: 1;
-      kind: "project" | "publish";
-      mutationId: string;
-      idempotencyKey: string;
-      sourceHandles: readonly AuthorizedResourceHandle[];
-      destinationHandle: string;
-    }>
-  | Readonly<{
-      version: 1;
-      kind: "delete";
+      kind: "delete" | "tombstone" | "admin-reclassify";
       mutationId: string;
       idempotencyKey: string;
       target: AuthorizedResourceHandle;

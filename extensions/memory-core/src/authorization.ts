@@ -1,15 +1,15 @@
 import type { MemoryPluginRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 
-/** Phase 1B advertises only the authorized read surface that is implemented and admitted. */
+/** Builtin scoped memory implements the complete Phase 2A authorization surface. */
 export const MEMORY_CORE_AUTHORIZATION_CAPABILITIES = Object.freeze({
   version: 1,
   scopedCandidates: true,
   exactReadByAuthorizedHandle: true,
-  scopedSync: false,
-  scopedWrite: false,
-  scopedImport: false,
-  scopedExport: false,
-  scopedStatus: false,
+  scopedSync: true,
+  scopedWrite: true,
+  scopedImport: true,
+  scopedExport: true,
+  scopedStatus: true,
   exposureReceipts: true,
   egressReceipts: true,
 }) satisfies NonNullable<MemoryPluginRuntime["authorization"]>;

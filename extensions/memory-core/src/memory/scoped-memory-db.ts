@@ -177,6 +177,62 @@ type MemoryEgressReceiptRow = {
   recorded_at: number;
 };
 
+type MemoryWriteIntentRow = {
+  intent_id: string;
+  idempotency_key: string;
+  mutation_id: string;
+  agent_id: string;
+  request_id: string;
+  run_id: string;
+  context_fingerprint: string;
+  plan_id: string;
+  mutation_kind:
+    | "remember"
+    | "append"
+    | "replace"
+    | "delete"
+    | "tombstone"
+    | "derive"
+    | "deposit"
+    | "project"
+    | "publish"
+    | "import"
+    | "sync"
+    | "admin-reclassify";
+  store_id: string;
+  resource_id: string | null;
+  pending_revision_id: string | null;
+  staged_locator: string | null;
+  final_locator: string | null;
+  content_hash: string | null;
+  content_bytes: number | null;
+  state: "pending" | "renamed" | "active" | "quarantined" | "tombstoned";
+  created_at: number;
+  updated_at: number;
+  activated_at: number | null;
+  indexed_at: number | null;
+};
+
+type MemoryAuditOutboxRow = {
+  event_id: string;
+  intent_id: string;
+  agent_id: string;
+  request_id: string;
+  run_id: string;
+  actor_ref: string;
+  subject_ref: string;
+  operation: string;
+  resource_revision_id: string | null;
+  content_hash: string | null;
+  decision: "pending" | "committed" | "quarantined" | "tombstoned";
+  reason_code: string;
+  state: "pending" | "delivered";
+  attempts: number;
+  created_at: number;
+  updated_at: number;
+  delivered_at: number | null;
+};
+
 export type ScopedMemoryDatabase = {
   memory_storage_roots: MemoryStorageRootRow;
   memory_stores: MemoryStoreRow;
@@ -190,6 +246,8 @@ export type ScopedMemoryDatabase = {
   memory_scoped_chunk_vectors: MemoryScopedChunkVectorRow;
   memory_exposure_receipts: MemoryExposureReceiptRow;
   memory_egress_receipts: MemoryEgressReceiptRow;
+  memory_write_intents: MemoryWriteIntentRow;
+  memory_audit_outbox: MemoryAuditOutboxRow;
 };
 
 export function withScopedMemoryDatabase<T>(
