@@ -945,6 +945,8 @@ describe("spawnAcpDirect", () => {
   });
 
   it("spawns ACP session, binds a new thread, and dispatches initial task", async () => {
+    const requesterMemorySubject = Object.freeze({ subjectRevision: "requester-subject" });
+    hoisted.readCurrentSessionMemorySubjectMock.mockReturnValue(requesterMemorySubject);
     const result = await spawnAcpDirect(
       {
         task: "Investigate flaky tests",
@@ -975,6 +977,13 @@ describe("spawnAcpDirect", () => {
       createdActor: { type: "agent", id: "agent:main:main" },
       createdAt: expect.any(Number),
     });
+    expect(
+      (
+        hoisted.upsertSessionEntryMock.mock.calls[0]?.[2] as
+          | { memorySubjectSeed?: unknown }
+          | undefined
+      )?.memorySubjectSeed,
+    ).toBe(requesterMemorySubject);
     expectBindingCallFields({
       targetKind: "session",
       placement: "child",

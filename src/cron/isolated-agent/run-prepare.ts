@@ -5,7 +5,6 @@ import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/openai-routing.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../../agents/runtime-plugins.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
-import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { resolveSessionWorkStartError } from "../../config/sessions/lifecycle.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
@@ -66,6 +65,7 @@ import {
   type CronRunContinuationSession,
   type MutableCronSession,
   type PersistCronSessionEntry,
+  type PersistSessionEntry,
 } from "./run-session-state.js";
 import { resolveCronRunTimeoutOverrideMs } from "./run-timeout.js";
 import {
@@ -74,6 +74,7 @@ import {
   logWarn,
   mapHookExternalContentSource,
   normalizeAgentId,
+  prepareAutonomousAgentSessionMemorySubjectSeed,
   resolveAgentConfig,
   resolveAgentDir,
   resolveAgentTimeoutMs,
@@ -213,6 +214,9 @@ export async function prepareCronRunContext(params: {
 
   const isGmailHook = hookExternalContentSource === "gmail";
   const now = Date.now();
+  // Resolve shared-state identity before session resolution opens the agent DB.
+  // Every unattended cron or hook session is owned by its canonical agent.
+  const memorySubjectSeed = prepareAutonomousAgentSessionMemorySubjectSeed(agentId);
   const cronSession = resolveCronSession({
     cfg: runtimeCfg,
     sessionKey: agentSessionKey,
@@ -272,18 +276,12 @@ export async function prepareCronRunContext(params: {
   });
 
   try {
-    const persistCronSessionRow = async ({
+    const persistCronSessionRow: PersistSessionEntry = async ({
       storePath,
       sessionKey,
       fallbackEntry,
       resetBoundaryReason,
       update,
-    }: {
-      storePath: string;
-      sessionKey: string;
-      fallbackEntry: SessionEntry;
-      resetBoundaryReason?: "cron-stale";
-      update: (entry: SessionEntry | undefined) => SessionEntry;
     }) => {
       const { applySessionEntryLifecycleMutation, patchSessionEntry } =
         await loadSessionAccessorRuntime();
@@ -296,6 +294,7 @@ export async function prepareCronRunContext(params: {
             {
               sessionKey,
               resetBoundaryReason,
+              memorySubjectSeed,
               buildEntry: ({ currentEntry }) => update(currentEntry),
             },
           ],
@@ -307,7 +306,7 @@ export async function prepareCronRunContext(params: {
       await patchSessionEntry(
         { storePath, sessionKey, agentId },
         (_entry, context) => update(context.existingEntry),
-        { fallbackEntry, replaceEntry: true },
+        { fallbackEntry, memorySubjectSeed, replaceEntry: true },
       );
     };
     const persistSessionEntry = createPersistCronSessionEntry({

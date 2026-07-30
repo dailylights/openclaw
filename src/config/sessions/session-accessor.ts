@@ -235,6 +235,7 @@ export {
 } from "./session-memory-subject-access.js";
 export {
   prepareAmbiguousSessionMemorySubjectSeed,
+  prepareAutonomousAgentSessionMemorySubjectSeed,
   prepareChannelBindingSessionMemorySubjectSeed,
   prepareConversationSessionMemorySubjectSeed,
   prepareExplicitSessionMemorySubjectSeed,

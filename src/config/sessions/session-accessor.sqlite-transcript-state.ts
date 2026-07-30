@@ -14,7 +14,10 @@ import {
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
-import { persistSessionMemorySubjectInTransaction } from "./session-memory-subject.js";
+import {
+  persistSessionMemorySubjectInTransaction,
+  type TrustedSessionMemorySubjectSeed,
+} from "./session-memory-subject.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import {
   foldedSessionKeyAliasCandidates,
@@ -81,7 +84,10 @@ export function ensureTranscriptSessionRoot(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   updatedAt: number,
-  options: { allowStoredAlias?: boolean } = {},
+  options: {
+    allowStoredAlias?: boolean;
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
+  } = {},
 ): void {
   if (!options.allowStoredAlias) {
     assertCanonicalSqliteSessionKeysCurrent(database);
@@ -197,6 +203,7 @@ export function ensureTranscriptSessionRoot(
     sessionKey: scope.sessionKey,
     sessionId: scope.sessionId,
     sessionScope: "conversation",
+    ...(options.memorySubjectSeed ? { seed: options.memorySubjectSeed } : {}),
     now: updatedAt,
   });
 }

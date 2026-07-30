@@ -12,7 +12,7 @@ import {
 } from "../../auto-reply/thinking.js";
 import {
   createSessionEntryWithTranscript,
-  prepareExplicitSessionMemorySubjectSeed,
+  prepareAutonomousAgentSessionMemorySubjectSeed,
 } from "../../config/sessions/session-accessor.js";
 import { bindStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import type { Message, Model } from "../../llm/types.js";
@@ -602,10 +602,7 @@ async function createDefaultSdkSessionManager(
     }),
     {
       cwd,
-      memorySubjectSeed: prepareExplicitSessionMemorySubjectSeed({
-        kind: "agent",
-        stableSubjectId: target.agentId,
-      }),
+      memorySubjectSeed: prepareAutonomousAgentSessionMemorySubjectSeed(target.agentId),
     },
   );
   if (!created.ok) {

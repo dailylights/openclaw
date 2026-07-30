@@ -7,6 +7,7 @@ import {
   loadExactSessionEntry,
   loadTranscriptEvents,
   persistSessionResetLifecycle,
+  readCurrentSessionMemorySubject,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import {
@@ -35,6 +36,11 @@ describe("internal session effects", () => {
         /^agent:main:internal-session-effects:incognito-incognito-run-/,
       );
       expect(loadExactSessionEntry(target)?.entry.incognito).toBe(true);
+      const subject = readCurrentSessionMemorySubject(target);
+      if (!subject) {
+        throw new Error("expected incognito session memory subject");
+      }
+      expect(subject.subject).toMatchObject({ kind: "system" });
     } finally {
       closeOpenClawAgentDatabasesForTest();
     }
@@ -114,6 +120,11 @@ describe("internal session effects", () => {
         delivery: { kind: "internal" },
         createdAt: expect.any(Number),
       });
+      const subject = readCurrentSessionMemorySubject(target);
+      if (!subject) {
+        throw new Error("expected system session memory subject");
+      }
+      expect(subject.subject).toMatchObject({ kind: "system" });
       expect(listSessionEntries({ agentId: "main", storePath })).toEqual([]);
       await expect(loadTranscriptEvents(target)).resolves.toEqual([
         expect.objectContaining({ id: target.sessionId, type: "session" }),
@@ -165,6 +176,11 @@ describe("internal session effects", () => {
         storePath,
       });
       const events = await loadTranscriptEvents(target);
+      const sourceSubject = readCurrentSessionMemorySubject(source);
+      const targetSubject = readCurrentSessionMemorySubject(target);
+      if (!sourceSubject || !targetSubject) {
+        throw new Error("expected source and forked session memory subjects");
+      }
 
       expect(events[0]).toMatchObject({ id: target.sessionId, type: "session" });
       expect(events).toContainEqual(
@@ -176,6 +192,8 @@ describe("internal session effects", () => {
       expect(listSessionEntries({ agentId: "main", storePath })).toEqual([
         expect.objectContaining({ sessionKey: source.sessionKey }),
       ]);
+      expect(targetSubject.subjectRevision).toBe(sourceSubject.subjectRevision);
+      expect(targetSubject.subject).toEqual(sourceSubject.subject);
     });
   });
 

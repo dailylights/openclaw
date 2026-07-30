@@ -24,7 +24,7 @@ import {
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
   loadSessionEntryReadOnly,
   patchSessionEntry as patchAccessorSessionEntry,
-  prepareExplicitSessionMemorySubjectSeed,
+  prepareAutonomousAgentSessionMemorySubjectSeed,
   replaceSessionEntry,
   rollbackAgentHarnessSessionEntryLifecycle,
   rollbackPluginOwnedSessionEntryLifecycle,
@@ -405,10 +405,7 @@ async function createSessionEntry(
               },
             },
             commandSource: "plugin-runtime",
-            memorySubjectSeed: prepareExplicitSessionMemorySubjectSeed({
-              kind: "agent",
-              stableSubjectId: target.agentId,
-            }),
+            memorySubjectSeed: prepareAutonomousAgentSessionMemorySubjectSeed(target.agentId),
             ...(initializesAfterCreate ? { afterCreate: runAfterCreate } : {}),
           });
           if (!result.ok) {

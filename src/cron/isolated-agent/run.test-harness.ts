@@ -4,6 +4,7 @@ import { vi, type Mock } from "vitest";
 import { resolveFastModeState as resolveFastModeStateImpl } from "../../agents/fast-mode.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
+import { prepareAmbiguousSessionMemorySubjectSeed } from "../../config/sessions/session-memory-subject.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 
 // Central mock harness for isolated cron agent run orchestration tests.
@@ -112,6 +113,7 @@ const resolveAgentTimeoutMsMock = createMock();
 export const deriveSessionTotalTokensMock = createMock();
 const hasNonzeroUsageMock = createMock();
 export const ensureAgentWorkspaceMock = createMock();
+export const prepareAutonomousAgentSessionMemorySubjectSeedMock = createMock();
 const normalizeThinkLevelMock = createMock();
 const normalizeVerboseLevelMock = createMock();
 export const isThinkingLevelSupportedMock = createMock();
@@ -158,6 +160,8 @@ vi.mock("./run.runtime.js", async () => ({
   hasNonzeroUsage: hasNonzeroUsageMock,
   DEFAULT_IDENTITY_FILENAME: "IDENTITY.md",
   ensureAgentWorkspace: ensureAgentWorkspaceMock,
+  prepareAutonomousAgentSessionMemorySubjectSeed:
+    prepareAutonomousAgentSessionMemorySubjectSeedMock,
   normalizeThinkLevel: normalizeThinkLevelMock,
   isThinkingLevelSupported: isThinkingLevelSupportedMock,
   resolveSupportedThinkingLevel: resolveSupportedThinkingLevelMock,
@@ -572,6 +576,10 @@ function resetRunConfigMocks(): void {
       ),
   );
   ensureAgentWorkspaceMock.mockResolvedValue({ dir: "/tmp/workspace" });
+  prepareAutonomousAgentSessionMemorySubjectSeedMock.mockReset();
+  prepareAutonomousAgentSessionMemorySubjectSeedMock.mockReturnValue(
+    prepareAmbiguousSessionMemorySubjectSeed("unbound"),
+  );
   normalizeThinkLevelMock.mockImplementation((value: unknown) => value);
   isThinkingLevelSupportedMock.mockReturnValue(true);
   resolveSupportedThinkingLevelMock.mockImplementation(({ level }: { level?: unknown }) => level);

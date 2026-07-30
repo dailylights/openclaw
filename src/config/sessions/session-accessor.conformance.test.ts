@@ -29,6 +29,7 @@ import {
   onSessionIdentityMutation,
   patchSessionEntry,
   publishTranscriptUpdate,
+  readCurrentSessionMemorySubject,
   readSessionUpdatedAt,
   replaceSessionEntry,
   resolveSessionTranscriptRuntimeTarget,
@@ -1365,6 +1366,10 @@ describe("sqlite session normalization", () => {
         type: "metadata",
       },
     );
+    const beforeRolloverSubject = readCurrentSessionMemorySubject(scope);
+    if (!beforeRolloverSubject) {
+      throw new Error("expected pre-rollover memory subject");
+    }
 
     await upsertSqliteSessionEntry(scope, {
       delivery: normalizeSessionDeliveryState({ context: { channel: "telegram" } }),
@@ -1382,6 +1387,10 @@ describe("sqlite session normalization", () => {
         type: "metadata",
       },
     );
+    const afterRolloverSubject = readCurrentSessionMemorySubject(scope);
+    if (!afterRolloverSubject) {
+      throw new Error("expected post-rollover memory subject");
+    }
 
     await expect(
       loadSqliteTranscriptEvents({ ...scope, sessionId: oldSessionId }),
@@ -1400,6 +1409,11 @@ describe("sqlite session normalization", () => {
         usageFamilyKey: sessionKey,
         usageFamilySessionIds: [oldSessionId, newSessionId],
       }),
+    );
+    expect(afterRolloverSubject.subjectRevision).toBe(beforeRolloverSubject.subjectRevision);
+    expect(afterRolloverSubject.subject).toEqual(beforeRolloverSubject.subject);
+    expect(afterRolloverSubject.sessionIdentityRevision).not.toBe(
+      beforeRolloverSubject.sessionIdentityRevision,
     );
   });
 
@@ -2138,6 +2152,10 @@ describe("sqlite session normalization", () => {
       compactionCheckpoints: [checkpoint],
     };
     await upsertSqliteSessionEntry(sourceEntryScope, sourceEntry);
+    const sourceSubject = readCurrentSessionMemorySubject(sourceEntryScope);
+    if (!sourceSubject) {
+      throw new Error("expected checkpoint source memory subject");
+    }
 
     const notify = vi.fn();
     const unsubscribe = onSessionIdentityMutation(notify);
@@ -2177,6 +2195,16 @@ describe("sqlite session normalization", () => {
       }),
     );
     expect((result.entry as InternalSessionEntry).lifecycleRunId).toBeUndefined();
+    const branchSubject = readCurrentSessionMemorySubject({
+      ...sourceEntryScope,
+      sessionKey: branchKey,
+    });
+    if (!branchSubject) {
+      throw new Error("expected checkpoint branch memory subject");
+    }
+    expect(branchSubject.subjectRevision).toBe(sourceSubject.subjectRevision);
+    expect(branchSubject.subject).toEqual(sourceSubject.subject);
+    expect(branchSubject.sessionIdentityRevision).not.toBe(sourceSubject.sessionIdentityRevision);
     await expect(loadSqliteTranscriptEvents(branchScope)).resolves.toEqual([
       expect.objectContaining({ type: "session", id: result.entry.sessionId }),
       expect.objectContaining({ id: "pre-msg", type: "message" }),
@@ -2308,6 +2336,10 @@ describe("sqlite session normalization", () => {
       updatedAt: 10,
       compactionCheckpoints: [checkpoint],
     });
+    const sourceSubject = readCurrentSessionMemorySubject(sourceEntryScope);
+    if (!sourceSubject) {
+      throw new Error("expected checkpoint restore source memory subject");
+    }
 
     const result = await restoreSqliteCompactionCheckpointSession({
       agentId: "main",
@@ -2334,6 +2366,13 @@ describe("sqlite session normalization", () => {
         totalTokensVersion: 1,
       }),
     );
+    const restoredSubject = readCurrentSessionMemorySubject(sourceEntryScope);
+    if (!restoredSubject) {
+      throw new Error("expected restored checkpoint memory subject");
+    }
+    expect(restoredSubject.subjectRevision).toBe(sourceSubject.subjectRevision);
+    expect(restoredSubject.subject).toEqual(sourceSubject.subject);
+    expect(restoredSubject.sessionIdentityRevision).not.toBe(sourceSubject.sessionIdentityRevision);
     await expect(loadSqliteTranscriptEvents(restoredScope)).resolves.toEqual([
       expect.objectContaining({ type: "session", id: result.entry.sessionId }),
       expect.objectContaining({ id: "pre-msg", type: "message" }),

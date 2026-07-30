@@ -92,11 +92,6 @@ export async function prepareInternalSessionEffectsSession(params: {
         targetStorePath: params.storePath,
       })
     : undefined;
-  if (fork?.status !== "created") {
-    await replaceTranscriptEvents(scope, [
-      createSessionTranscriptHeader({ cwd: params.cwd, sessionId: scope.sessionId }),
-    ]);
-  }
   const memorySubjectSeed =
     fork?.status === "created"
       ? fork.transcript.memorySubjectSeed
@@ -106,6 +101,13 @@ export async function prepareInternalSessionEffectsSession(params: {
             kind: "system",
             stableSubjectId: `internal-session-effects:${params.agentId}`,
           });
+  if (fork?.status !== "created") {
+    await replaceTranscriptEvents(
+      scope,
+      [createSessionTranscriptHeader({ cwd: params.cwd, sessionId: scope.sessionId })],
+      { memorySubjectSeed },
+    );
+  }
   const now = Date.now();
   const entry = await upsertSessionEntry(
     scope,

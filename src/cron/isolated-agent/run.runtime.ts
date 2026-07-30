@@ -18,6 +18,7 @@ export {
   isThinkingLevelSupported,
   resolveSupportedThinkingLevel,
 } from "../../auto-reply/thinking.js";
+export { prepareAutonomousAgentSessionMemorySubjectSeed } from "../../config/sessions/session-accessor.js";
 export { setSessionRuntimeModel } from "../../config/sessions/types.js";
 export { logWarn } from "../../logger.js";
 export { normalizeAgentId } from "../../routing/session-key.js";

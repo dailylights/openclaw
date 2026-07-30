@@ -11,6 +11,7 @@ import {
   makeCronSessionEntry,
   mockRunCronFallbackPassthrough,
   patchSessionEntryMock,
+  prepareAutonomousAgentSessionMemorySubjectSeedMock,
   resolveCronSessionMock,
   runCliAgentMock,
   runEmbeddedAgentMock,
@@ -24,6 +25,31 @@ function requireFirstMockArg(mock: { mock: { calls: unknown[][] } }, label: stri
     throw new Error(`Expected ${label} to be called with a first argument`);
   }
   return arg;
+}
+
+function expectAutonomousMemorySubjectSeedPersisted(agentId: string): void {
+  expect(prepareAutonomousAgentSessionMemorySubjectSeedMock).toHaveBeenCalledOnce();
+  expect(prepareAutonomousAgentSessionMemorySubjectSeedMock).toHaveBeenCalledWith(agentId);
+  const seed = prepareAutonomousAgentSessionMemorySubjectSeedMock.mock.results[0]?.value;
+  if (seed === undefined) {
+    throw new Error("Expected autonomous memory subject seed result");
+  }
+  const seedOrder = prepareAutonomousAgentSessionMemorySubjectSeedMock.mock.invocationCallOrder[0];
+  const resolveOrder = resolveCronSessionMock.mock.invocationCallOrder[0];
+  if (seedOrder === undefined || resolveOrder === undefined) {
+    throw new Error("Expected autonomous subject and cron resolution call order");
+  }
+  expect(seedOrder).toBeLessThan(resolveOrder);
+
+  const persistedSeeds = patchSessionEntryMock.mock.calls.flatMap((call) => {
+    const persistedSeed = (call[2] as { memorySubjectSeed?: unknown } | undefined)
+      ?.memorySubjectSeed;
+    return persistedSeed === undefined ? [] : [persistedSeed];
+  });
+  expect(persistedSeeds.length).toBeGreaterThan(0);
+  for (const persistedSeed of persistedSeeds) {
+    expect(persistedSeed).toBe(seed);
+  }
 }
 
 describe("runCronIsolatedAgentTurn isolated session identity", () => {
@@ -91,6 +117,7 @@ describe("runCronIsolatedAgentTurn isolated session identity", () => {
     expect(runRequest.promptCacheKey).not.toContain("daily-monitor");
     expect(runRequest.bootstrapContextMode).toBe("lightweight");
     expect(runRequest.bootstrapContextRunKind).toBe("cron");
+    expectAutonomousMemorySubjectSeedPersisted("default");
     expect(cleanupBrowserSessionsForLifecycleEndMock).toHaveBeenCalledOnce();
     expect(cleanupBrowserSessionsForLifecycleEndMock).toHaveBeenCalledWith({
       cfg: expect.any(Object),
@@ -380,5 +407,6 @@ describe("runCronIsolatedAgentTurn isolated session identity", () => {
 
     expect(result.status).toBe("ok");
     expect(runCliAgentMock).toHaveBeenCalledOnce();
+    expectAutonomousMemorySubjectSeedPersisted("default");
   });
 });

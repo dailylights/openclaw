@@ -32,7 +32,7 @@ export type CronLiveSelection = LiveSessionModelSelection;
  * returns the full entry to commit. `fallbackEntry` seeds creation when the
  * row does not exist yet.
  */
-type PersistSessionEntry = (params: {
+export type PersistSessionEntry = (params: {
   fallbackEntry: SessionEntry;
   resetBoundaryReason?: "cron-stale";
   sessionKey: string;

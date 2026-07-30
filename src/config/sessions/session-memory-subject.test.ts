@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { memoryIdentityLifecycle } from "../../state/memory-identity.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -7,15 +7,21 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import {
   prepareAmbiguousSessionMemorySubjectSeed,
+  prepareAutonomousAgentSessionMemorySubjectSeed,
   prepareChannelBindingSessionMemorySubjectSeed,
+  prepareConversationSessionMemorySubjectSeed,
   prepareExplicitSessionMemorySubjectSeed,
   prepareGatewayProfileSessionMemorySubjectSeed,
+  prepareSessionMemorySubjectLineageSeed,
   readCurrentSessionMemorySubject,
   readCurrentSessionMemorySubjectAuthority,
+  replaceSessionEntrySync,
   resetSessionEntryLifecycle,
   SessionMemorySubjectReboundError,
   upsertSessionEntry,
 } from "./session-accessor.js";
+import { importSqliteSessionRows } from "./session-accessor.sqlite.js";
+import * as sessionMemorySubjectModule from "./session-memory-subject.js";
 
 const {
   createMemoryIdentityBinding,
@@ -36,6 +42,7 @@ function createPaths() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -101,6 +108,109 @@ describe("session memory subject", () => {
     });
   });
 
+  it("persists the isolated DM, group, and channel subject matrix", async () => {
+    const { stateOptions, storePath } = createPaths();
+    const principal = ensureEnterpriseMemoryPrincipal({
+      issuer: "test-issuer",
+      stableSubjectId: "isolated-dm-user",
+      now: 100,
+      options: stateOptions,
+    });
+    createMemoryIdentityBinding({
+      channel: "telegram",
+      accountId: "default",
+      stableSenderId: "telegram-dm-user",
+      principalId: principal.principalId,
+      adapterId: "telegram-pairing",
+      assurance: "adapter-attested",
+      verificationMethod: "pairing",
+      evidenceRevision: "dm-binding-revision",
+      createdBy: "operator-1",
+      now: 100,
+      options: stateOptions,
+    });
+    const cases = [
+      {
+        label: "isolated DM",
+        sessionKey: "agent:main:telegram:direct:telegram-dm-user",
+        chatType: "direct" as const,
+        sessionScope: "conversation",
+        seed: prepareChannelBindingSessionMemorySubjectSeed({
+          channel: "telegram",
+          accountId: "default",
+          stableSenderId: "telegram-dm-user",
+          now: 101,
+          options: stateOptions,
+        }),
+      },
+      {
+        label: "group",
+        sessionKey: "agent:main:telegram:group:group-1",
+        chatType: "group" as const,
+        sessionScope: "group",
+        seed: prepareConversationSessionMemorySubjectSeed({
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "group-1",
+          canonicalConversationRef: "telegram:default:group:group-1",
+          now: 101,
+          options: stateOptions,
+        }),
+      },
+      {
+        label: "channel",
+        sessionKey: "agent:main:discord:channel:channel-1",
+        chatType: "channel" as const,
+        sessionScope: "channel",
+        seed: prepareConversationSessionMemorySubjectSeed({
+          channel: "discord",
+          accountId: "primary",
+          conversationId: "channel-1",
+          canonicalConversationRef: "discord:primary:channel:channel-1",
+          now: 101,
+          options: stateOptions,
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const scope = { agentId: "main", sessionKey: testCase.sessionKey, storePath };
+      await upsertSessionEntry(
+        scope,
+        {
+          chatType: testCase.chatType,
+          sessionId: `${testCase.label.replaceAll(" ", "-")}-session`,
+          updatedAt: 101,
+        },
+        { memorySubjectSeed: testCase.seed },
+      );
+      const snapshot = readCurrentSessionMemorySubject(scope);
+      if (!snapshot) {
+        throw new Error(`expected persisted ${testCase.label} memory subject`);
+      }
+      expect(snapshot.sessionScope).toBe(testCase.sessionScope);
+      expect(snapshot.subjectRevision).toBe(testCase.seed.subjectRevision);
+      expect(snapshot.subject).toEqual(testCase.seed.subject);
+    }
+  });
+
+  it("normalizes autonomous agent IDs before resolving their principal", () => {
+    const { stateOptions } = createPaths();
+    const autonomous = prepareAutonomousAgentSessionMemorySubjectSeed(
+      "  Research Agent  ",
+      stateOptions,
+    );
+    const canonical = prepareExplicitSessionMemorySubjectSeed({
+      kind: "agent",
+      stableSubjectId: "research-agent",
+      now: 100,
+      options: stateOptions,
+    });
+
+    expect(autonomous.subject).toEqual(canonical.subject);
+    expect(autonomous.subject).toMatchObject({ version: 1, kind: "agent" });
+  });
+
   it("copies the exact subject revision into a reset window", async () => {
     const { stateOptions, storePath } = createPaths();
     const sessionKey = "agent:main:service:reset";
@@ -117,6 +227,9 @@ describe("session memory subject", () => {
       { memorySubjectSeed: seed },
     );
     const before = readCurrentSessionMemorySubject(scope);
+    if (!before) {
+      throw new Error("expected pre-reset memory subject");
+    }
 
     await resetSessionEntryLifecycle({
       buildNextEntry: () => ({ sessionId: "after-reset", updatedAt: 200 }),
@@ -124,13 +237,71 @@ describe("session memory subject", () => {
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
     });
     const after = readCurrentSessionMemorySubject(scope);
+    if (!after) {
+      throw new Error("expected post-reset memory subject");
+    }
 
-    expect(after).toMatchObject({
-      sessionId: "after-reset",
-      subjectRevision: before?.subjectRevision,
-      subject: before?.subject,
+    expect(after.sessionId).toBe("after-reset");
+    expect(after.subjectRevision).toBe(before.subjectRevision);
+    expect(after.subject).toEqual(before.subject);
+    expect(after.sessionIdentityRevision).not.toBe(before.sessionIdentityRevision);
+  });
+
+  it("preserves confirmed import lineage and quarantines unconfirmed imports", async () => {
+    const { stateOptions, storePath } = createPaths();
+    const sourceScope = { agentId: "main", sessionKey: "agent:main:import-source", storePath };
+    const sourceSeed = prepareExplicitSessionMemorySubjectSeed({
+      kind: "service",
+      stableSubjectId: "confirmed-import-source",
+      now: 100,
+      options: stateOptions,
     });
-    expect(after?.sessionIdentityRevision).not.toBe(before?.sessionIdentityRevision);
+    await upsertSessionEntry(
+      sourceScope,
+      { sessionId: "import-source-session", updatedAt: 100 },
+      { memorySubjectSeed: sourceSeed },
+    );
+    const source = readCurrentSessionMemorySubject(sourceScope);
+    if (!source) {
+      throw new Error("expected source import memory subject");
+    }
+
+    const confirmedKey = "agent:main:confirmed-import";
+    await importSqliteSessionRows({
+      agentId: "main",
+      storePath,
+      sessionKey: confirmedKey,
+      entry: { sessionId: "confirmed-import-session", updatedAt: 110 },
+      confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(source),
+    });
+    const confirmed = readCurrentSessionMemorySubject({
+      agentId: "main",
+      sessionKey: confirmedKey,
+      storePath,
+    });
+    if (!confirmed) {
+      throw new Error("expected confirmed import memory subject");
+    }
+    expect(confirmed.subjectRevision).toBe(source.subjectRevision);
+    expect(confirmed.subject).toEqual(source.subject);
+
+    const unconfirmedKey = "agent:main:unconfirmed-import";
+    await importSqliteSessionRows({
+      agentId: "main",
+      storePath,
+      sessionKey: unconfirmedKey,
+      entry: { sessionId: "unconfirmed-import-session", updatedAt: 120 },
+    });
+    const unconfirmed = readCurrentSessionMemorySubject({
+      agentId: "main",
+      sessionKey: unconfirmedKey,
+      storePath,
+    });
+    if (!unconfirmed) {
+      throw new Error("expected unconfirmed import memory subject");
+    }
+    expect(unconfirmed.subject).toEqual({ version: 1, kind: "ambiguous", reason: "unbound" });
+    expect(unconfirmed.subjectRevision).not.toBe(source.subjectRevision);
   });
 
   it("rejects reuse of one transcript session id by another logical subject", async () => {
@@ -311,7 +482,7 @@ describe("session memory subject", () => {
       principalId: principal.principalId,
       adapterId: "signal-link",
       assurance: "oidc",
-      verificationMethod: "oidc",
+      verificationMethod: "oauth",
       evidenceRevision: "binding-revision-1",
       createdBy: "operator-1",
       now: 100,
@@ -341,6 +512,104 @@ describe("session memory subject", () => {
       kind: "denied",
       reason: "principal-revoked",
     });
+  });
+
+  it("fails closed when a binding is revoked between authority checks", async () => {
+    const { stateOptions, storePath } = createPaths();
+    const scope = { agentId: "main", sessionKey: "agent:main:binding-race", storePath };
+    const principal = ensureEnterpriseMemoryPrincipal({
+      issuer: "test-issuer",
+      stableSubjectId: "binding-race-user",
+      now: 100,
+      options: stateOptions,
+    });
+    const binding = createMemoryIdentityBinding({
+      channel: "telegram",
+      accountId: "default",
+      stableSenderId: "binding-race-user",
+      principalId: principal.principalId,
+      adapterId: "telegram-pairing",
+      assurance: "adapter-attested",
+      verificationMethod: "pairing",
+      evidenceRevision: "binding-race-revision",
+      createdBy: "operator-1",
+      now: 100,
+      options: stateOptions,
+    });
+    const seed = prepareChannelBindingSessionMemorySubjectSeed({
+      channel: "telegram",
+      accountId: "default",
+      stableSenderId: "binding-race-user",
+      now: 101,
+      options: stateOptions,
+    });
+    await upsertSessionEntry(
+      scope,
+      { sessionId: "binding-race-session", updatedAt: 101 },
+      { memorySubjectSeed: seed },
+    );
+
+    const resolveAuthority = sessionMemorySubjectModule.resolveSessionMemorySubjectAuthority;
+    let authorityChecks = 0;
+    const resolveAuthoritySpy = vi
+      .spyOn(sessionMemorySubjectModule, "resolveSessionMemorySubjectAuthority")
+      .mockImplementation((snapshot, options, now) => {
+        const result = resolveAuthority(snapshot, options, now);
+        authorityChecks += 1;
+        if (authorityChecks === 1) {
+          expect(result.kind).toBe("current");
+          revokeMemoryIdentityBinding({
+            bindingId: binding.bindingId,
+            revokedBy: "operator-2",
+            now: 102,
+            options: stateOptions,
+          });
+        }
+        return result;
+      });
+
+    expect(readCurrentSessionMemorySubjectAuthority(scope, stateOptions, 103)?.authority).toEqual({
+      kind: "denied",
+      reason: "binding-revoked",
+    });
+    expect(resolveAuthoritySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a session window replaced between authority checks", async () => {
+    const { stateOptions, storePath } = createPaths();
+    const scope = { agentId: "main", sessionKey: "agent:main:rebound-race", storePath };
+    const seed = prepareExplicitSessionMemorySubjectSeed({
+      kind: "service",
+      stableSubjectId: "rebound-race-service",
+      now: 100,
+      options: stateOptions,
+    });
+    await upsertSessionEntry(
+      scope,
+      { sessionId: "rebound-race-before", updatedAt: 101 },
+      { memorySubjectSeed: seed },
+    );
+
+    const resolveAuthority = sessionMemorySubjectModule.resolveSessionMemorySubjectAuthority;
+    let replaced = false;
+    const resolveAuthoritySpy = vi
+      .spyOn(sessionMemorySubjectModule, "resolveSessionMemorySubjectAuthority")
+      .mockImplementation((snapshot, options, now) => {
+        const result = resolveAuthority(snapshot, options, now);
+        if (!replaced) {
+          replaced = true;
+          replaceSessionEntrySync(scope, {
+            sessionId: "rebound-race-after",
+            updatedAt: 102,
+          });
+        }
+        return result;
+      });
+
+    expect(() => readCurrentSessionMemorySubjectAuthority(scope, stateOptions, 103)).toThrow(
+      SessionMemorySubjectReboundError,
+    );
+    expect(resolveAuthoritySpy).toHaveBeenCalledOnce();
   });
 
   it("reconciles an old Gateway-profile session after linkEmail merges its profile", async () => {

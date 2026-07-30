@@ -35,7 +35,8 @@ export function readCurrentSessionMemorySubject(
 
 /**
  * Rechecks shared identity evidence without holding an agent transaction, then
- * rereads the agent mapping so a reset/rebind cannot race the authority result.
+ * rereads the agent mapping and identity authority so either database changing
+ * across the check fails closed.
  */
 export function readCurrentSessionMemorySubjectAuthority(
   scope: SessionAccessScope,
@@ -51,7 +52,7 @@ export function readCurrentSessionMemorySubjectAuthority(
   if (!snapshot) {
     return undefined;
   }
-  const authority = resolveSessionMemorySubjectAuthority(snapshot, stateOptions, now);
+  resolveSessionMemorySubjectAuthority(snapshot, stateOptions, now);
   const current = readCurrentSessionMemorySubject(scope);
   if (
     !current ||
@@ -61,5 +62,6 @@ export function readCurrentSessionMemorySubjectAuthority(
   ) {
     throw new SessionMemorySubjectReboundError(snapshot.sessionId);
   }
-  return { snapshot, authority };
+  const authority = resolveSessionMemorySubjectAuthority(current, stateOptions, now);
+  return { snapshot: current, authority };
 }

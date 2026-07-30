@@ -306,7 +306,7 @@ function mutateSqliteSessionAtMessageInTransaction(
             targetId: params.mode === "switch" ? params.entryId : (cut?.parentId ?? null),
           },
         ];
-  appendTranscriptEventsInTransaction(database, targetScope, nextEvents);
+  appendTranscriptEventsInTransaction(database, targetScope, nextEvents, { memorySubjectSeed });
   if (params.mode !== "fork") {
     reconcileSessionTranscriptIndexInTransaction(database.db, nextSessionId);
   }

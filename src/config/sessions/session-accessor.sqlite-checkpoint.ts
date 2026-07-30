@@ -26,7 +26,10 @@ import {
   appendTranscriptEventsInTransaction,
   readTranscriptIdentityByEventId,
 } from "./session-accessor.sqlite-transcript-store.js";
-import { prepareCurrentSessionMemorySubjectLineageSeedInTransaction } from "./session-memory-subject.js";
+import {
+  prepareCurrentSessionMemorySubjectLineageSeedInTransaction,
+  type TrustedSessionMemorySubjectSeed,
+} from "./session-memory-subject.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
   SESSION_TOTAL_TOKENS_VERSION,
@@ -195,6 +198,7 @@ function branchSqliteCompactionCheckpointSessionInTransaction(
   const forked = forkSqliteCheckpointTranscriptInTransaction(database, params.resolved, {
     checkpoint,
     legacySource: params.legacySource,
+    memorySubjectSeed,
     targetSessionKey: params.targetKey,
   });
   if (forked.status !== "created") {
@@ -252,6 +256,7 @@ function restoreSqliteCompactionCheckpointSessionInTransaction(
   const restored = forkSqliteCheckpointTranscriptInTransaction(database, params.resolved, {
     checkpoint,
     legacySource: params.legacySource,
+    memorySubjectSeed,
     targetSessionKey: params.targetKey,
   });
   if (restored.status !== "created") {
@@ -279,6 +284,7 @@ function forkSqliteCheckpointTranscriptInTransaction(
   params: {
     checkpoint: SessionCompactionCheckpoint;
     legacySource?: SqliteCompactionCheckpointLegacySource;
+    memorySubjectSeed: TrustedSessionMemorySubjectSeed;
     targetSessionKey: string;
   },
 ):
@@ -327,13 +333,18 @@ function forkSqliteCheckpointTranscriptInTransaction(
   const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
   const selectedEvents = selected?.rows ?? legacySource?.events ?? [];
   const totalTokens = selected?.source.totalTokens ?? legacySource?.totalTokens;
-  appendTranscriptEventsInTransaction(database, targetScope, [
-    createSessionTranscriptHeader({
-      cwd: readTranscriptHeaderCwd(selectedEvents),
-      sessionId,
-    }),
-    ...selectedEvents.filter((event) => !isSessionTranscriptHeader(event)),
-  ]);
+  appendTranscriptEventsInTransaction(
+    database,
+    targetScope,
+    [
+      createSessionTranscriptHeader({
+        cwd: readTranscriptHeaderCwd(selectedEvents),
+        sessionId,
+      }),
+      ...selectedEvents.filter((event) => !isSessionTranscriptHeader(event)),
+    ],
+    { memorySubjectSeed: params.memorySubjectSeed },
+  );
   return {
     status: "created",
     sessionId,

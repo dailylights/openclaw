@@ -594,19 +594,19 @@ Reuse and extend:
 
 Phase 1A is complete only when all of the following are demonstrated:
 
-- [ ] Every logical session kind resolves to a persisted write-once subject or
+- [x] Every logical session kind resolves to a persisted write-once subject or
       an explicit ambiguous state.
-- [ ] Raw sender fields, display names, aliases, `identityLinks`, route keys,
+- [x] Raw sender fields, display names, aliases, `identityLinks`, route keys,
       and model-visible context cannot grant or replace a principal.
-- [ ] Revoked, expired, unbound, or conflicting identity evidence prevents a
+- [x] Revoked, expired, unbound, or conflicting identity evidence prevents a
       private subject from being issued.
-- [ ] A shared-main DM cannot mount private memory, and Doctor reports the exact
+- [x] A shared-main DM cannot mount private memory, and Doctor reports the exact
       isolating `dmScope` remediation without rewriting configuration.
-- [ ] Reset, rollover, fork, rewind, recovery, and confirmed import tests prove
+- [x] Reset, rollover, fork, rewind, recovery, and confirmed import tests prove
       that subject provenance is copied exactly while current authority is
       rechecked.
-- [ ] Session-rebound and revoke-between-check-and-use races fail closed.
-- [ ] Additive schema compatibility and identity/session lifecycle tests pass
+- [x] Session-rebound and revoke-between-check-and-use races fail closed.
+- [x] Additive schema compatibility and identity/session lifecycle tests pass
       for existing and newly created agent databases.
 
 ### Rollback

@@ -43,6 +43,7 @@ type MemoryPrincipal = Readonly<{
 }>;
 
 export type MemoryIdentityBindingAssurance = "adapter-attested" | "oidc";
+type MemoryIdentityVerificationMethod = "pairing" | "oauth" | "admin-link";
 
 type MemoryIdentityBinding = Readonly<{
   bindingId: string;
@@ -51,7 +52,7 @@ type MemoryIdentityBinding = Readonly<{
   principalId: string;
   adapterId: string;
   assurance: MemoryIdentityBindingAssurance;
-  verificationMethod: string;
+  verificationMethod: MemoryIdentityVerificationMethod;
   evidenceRevision: string;
   createdBy: string;
   createdAt: number;
@@ -101,12 +102,12 @@ function normalizeChannel(value: string): string {
   return requireText(value, "channel").toLowerCase();
 }
 
-function normalizeAccountId(value: string): string {
-  return requireText(value, "accountId");
-}
-
-function normalizeStableSenderId(value: string): string {
-  return requireText(value, "stableSenderId");
+function requireMemoryIdentityVerificationMethod(value: string): MemoryIdentityVerificationMethod {
+  const normalized = requireText(value, "verificationMethod");
+  if (normalized === "pairing" || normalized === "oauth" || normalized === "admin-link") {
+    return normalized;
+  }
+  throw new TypeError("verificationMethod must be pairing, oauth, or admin-link");
 }
 
 function optionalNumber(value: number | null): number | undefined {
@@ -137,7 +138,7 @@ function toMemoryIdentityBinding(row: MemoryIdentityBindingRow): MemoryIdentityB
     principalId: row.principal_id,
     adapterId: row.adapter_id,
     assurance: row.assurance as MemoryIdentityBindingAssurance,
-    verificationMethod: row.verification_method,
+    verificationMethod: requireMemoryIdentityVerificationMethod(row.verification_method),
     evidenceRevision: row.evidence_revision,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -413,7 +414,7 @@ function ensureConversationMemoryPrincipal(params: {
   options?: OpenClawStateDatabaseOptions;
 }): MemoryPrincipal {
   const channel = normalizeChannel(params.channel);
-  const accountId = normalizeAccountId(params.accountId);
+  const accountId = requireText(params.accountId, "accountId");
   return ensureOpaquePrincipal({
     kind: "conversation",
     issuer: channel,
@@ -434,7 +435,7 @@ function createMemoryIdentityBinding(params: {
   principalId: string;
   adapterId: string;
   assurance: MemoryIdentityBindingAssurance;
-  verificationMethod: string;
+  verificationMethod: MemoryIdentityVerificationMethod;
   evidenceRevision: string;
   createdBy: string;
   expiresAt?: number;
@@ -442,11 +443,11 @@ function createMemoryIdentityBinding(params: {
   options?: OpenClawStateDatabaseOptions;
 }): MemoryIdentityBinding {
   const channel = normalizeChannel(params.channel);
-  const accountId = normalizeAccountId(params.accountId);
-  const stableSenderId = normalizeStableSenderId(params.stableSenderId);
+  const accountId = requireText(params.accountId, "accountId");
+  const stableSenderId = requireText(params.stableSenderId, "stableSenderId");
   const principalId = requireText(params.principalId, "principalId");
   const adapterId = requireText(params.adapterId, "adapterId");
-  const verificationMethod = requireText(params.verificationMethod, "verificationMethod");
+  const verificationMethod = requireMemoryIdentityVerificationMethod(params.verificationMethod);
   const evidenceRevision = requireText(params.evidenceRevision, "evidenceRevision");
   const createdBy = requireText(params.createdBy, "createdBy");
   const now = params.now ?? Date.now();
@@ -551,8 +552,8 @@ function resolveMemoryIdentityBinding(params: {
   options?: OpenClawStateDatabaseOptions;
 }): MemoryIdentityBindingResolution {
   const channel = normalizeChannel(params.channel);
-  const accountId = normalizeAccountId(params.accountId);
-  const stableSenderId = normalizeStableSenderId(params.stableSenderId);
+  const accountId = requireText(params.accountId, "accountId");
+  const stableSenderId = requireText(params.stableSenderId, "stableSenderId");
   const options = params.options ?? {};
   const now = params.now ?? Date.now();
   ensureMemoryIdentitySchema(options);

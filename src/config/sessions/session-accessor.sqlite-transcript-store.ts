@@ -29,6 +29,7 @@ import {
   rotateTranscriptGenerationInTransaction,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
+import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
 import {
   deleteSessionTranscriptIndexInTransaction,
   indexAppendedTranscriptEventInTransaction,
@@ -49,6 +50,8 @@ export function appendTranscriptEventInTransaction(
   options: {
     allowStoredAlias?: boolean;
     dedupeByMessageIdempotency?: boolean;
+    /** Forks must bind copied lineage before the transcript root seals its write-once subject. */
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
     onProjectionReconcileNeeded?: () => void;
     scheduleProjectionReconcile?: boolean;
     touchMutation?: boolean;
@@ -59,6 +62,7 @@ export function appendTranscriptEventInTransaction(
   const createdAt = readEventTimestamp(persistedEvent) ?? Date.now();
   ensureTranscriptSessionRoot(database, scope, createdAt, {
     allowStoredAlias: options.allowStoredAlias === true,
+    ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
   });
   ensureTranscriptGenerationInTransaction(database, scope.sessionId);
   const identity = readTranscriptEventIdentity(persistedEvent);
@@ -156,12 +160,14 @@ export function appendTranscriptEventsInTransaction(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   events: readonly TranscriptEvent[],
+  options: { memorySubjectSeed?: TrustedSessionMemorySubjectSeed } = {},
 ): number {
   let appended = 0;
   let projectionNeedsRebuild = false;
   for (const event of events) {
     if (
       appendTranscriptEventInTransaction(database, scope, event, {
+        ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
         onProjectionReconcileNeeded: () => {
           projectionNeedsRebuild = true;
         },
@@ -325,6 +331,8 @@ export function replaceSqliteTranscriptEventsInTransaction(
   events: readonly TranscriptEvent[],
   options: {
     createdAtByIndex?: readonly number[];
+    /** New transcript roots must receive trusted lineage before their subject becomes write-once. */
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
     /** Keep maintenance rewrites at their existing recency while invalidating stale projections. */
     preserveSessionWindowRecency?: boolean;
   } = {},
@@ -347,7 +355,14 @@ export function replaceSqliteTranscriptEventsInTransaction(
     return;
   }
   if (!deleted || options.preserveSessionWindowRecency !== true) {
-    ensureTranscriptSessionRoot(database, resolved, readEventTimestamp(events[0]) ?? Date.now());
+    ensureTranscriptSessionRoot(
+      database,
+      resolved,
+      readEventTimestamp(events[0]) ?? Date.now(),
+      {
+        ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
+      },
+    );
   }
   if (deleted || previousGeneration) {
     rotateTranscriptGenerationInTransaction(database, resolved.sessionId);

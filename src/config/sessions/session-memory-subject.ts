@@ -1,3 +1,4 @@
+import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import type { SessionMemorySubject } from "../../memory-host-sdk/host/authorization.js";
 import {
   memoryIdentityLifecycle,
@@ -150,6 +151,19 @@ export function prepareExplicitSessionMemorySubjectSeed(params: {
       kind: params.kind,
       principalId: principal.principalId,
     },
+  });
+}
+
+/** Resolves autonomous work to the stable principal owned by one canonical agent. */
+export function prepareAutonomousAgentSessionMemorySubjectSeed(
+  agentId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): TrustedSessionMemorySubjectSeed {
+  const canonicalAgentId = normalizeAgentId(requireSessionMemorySubjectText(agentId, "agentId"));
+  return prepareExplicitSessionMemorySubjectSeed({
+    kind: "agent",
+    stableSubjectId: canonicalAgentId,
+    options,
   });
 }
 

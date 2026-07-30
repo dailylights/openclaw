@@ -119,7 +119,7 @@ describe("memory identity", () => {
         principalId,
         adapterId: "signal-link",
         assurance: "oidc",
-        verificationMethod: "oidc",
+        verificationMethod: "oauth",
         evidenceRevision,
         createdBy: "operator-1",
         expiresAt,
@@ -211,7 +211,7 @@ describe("memory identity", () => {
       principalId: source.principalId,
       adapterId: "irc-account-link",
       assurance: "adapter-attested",
-      verificationMethod: "operator-link",
+      verificationMethod: "admin-link",
       evidenceRevision: "binding-revision",
       createdBy: "operator-1",
       now: 100,
@@ -279,5 +279,31 @@ describe("memory identity", () => {
         options,
       }),
     ).toThrow("memory binding principal must be a verified user: service");
+  });
+
+  it("accepts only pairing, OAuth, or admin-link verification methods", () => {
+    const options = createStateOptions();
+    const principal = ensureEnterpriseMemoryPrincipal({
+      issuer: "test-issuer",
+      stableSubjectId: "verified-user",
+      now: 100,
+      options,
+    });
+
+    expect(() =>
+      createMemoryIdentityBinding({
+        channel: "signal",
+        accountId: "default",
+        stableSenderId: "sender-1",
+        principalId: principal.principalId,
+        adapterId: "signal-link",
+        assurance: "oidc",
+        verificationMethod: "oidc" as never,
+        evidenceRevision: "evidence-1",
+        createdBy: "operator-1",
+        now: 100,
+        options,
+      }),
+    ).toThrow("verificationMethod must be pairing, oauth, or admin-link");
   });
 });

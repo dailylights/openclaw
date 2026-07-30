@@ -54,6 +54,7 @@ import {
   rewriteSqliteTranscriptEventRowsInTransaction,
 } from "./session-accessor.sqlite-transcript-store.js";
 import type { SessionTranscriptWriteTransactionContext } from "./session-accessor.types.js";
+import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
 import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -109,11 +110,14 @@ type SqliteTranscriptSnapshotState =
 export async function replaceSqliteTranscriptEvents(
   scope: SessionTranscriptAccessScope,
   events: TranscriptEvent[],
+  options: {
+    memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
+  } = {},
 ): Promise<void> {
   const resolved = resolveSqliteTranscriptScope(scope);
   await runExclusiveSqliteSessionWrite(resolved, async () => {
     runOpenClawAgentWriteTransaction((database) => {
-      replaceSqliteTranscriptEventsInTransaction(database, resolved, events);
+      replaceSqliteTranscriptEventsInTransaction(database, resolved, events, options);
     }, toDatabaseOptions(resolved));
   });
 }

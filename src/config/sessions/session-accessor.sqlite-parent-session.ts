@@ -145,6 +145,7 @@ export async function forkSqliteSessionTranscriptFromParent(
     const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
     runOpenClawAgentWriteTransaction((database) => {
       writeSqliteForkedChildTranscriptInTransaction(database, targetScope, {
+        memorySubjectSeed: captured.memorySubjectSeed,
         parentSessionFile: captured.parentSessionFile,
         source: captured.source,
       });
@@ -448,6 +449,7 @@ function forkSqliteParentTranscriptInTransaction(
   });
   const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
   writeSqliteForkedChildTranscriptInTransaction(database, targetScope, {
+    memorySubjectSeed,
     parentSessionFile,
     source,
   });
@@ -465,6 +467,7 @@ function writeSqliteForkedChildTranscriptInTransaction(
   database: OpenClawAgentDatabase,
   targetScope: ResolvedTranscriptScope,
   params: {
+    memorySubjectSeed: TrustedSessionMemorySubjectSeed;
     parentSessionFile: string;
     source: SqliteParentForkSourceTranscript;
   },
@@ -477,5 +480,6 @@ function writeSqliteForkedChildTranscriptInTransaction(
       source: params.source,
       targetSessionId: targetScope.sessionId,
     }),
+    { memorySubjectSeed: params.memorySubjectSeed },
   );
 }

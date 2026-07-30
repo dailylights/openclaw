@@ -17,6 +17,7 @@ import {
   listSessionBranches,
   loadSessionEntry,
   loadTranscriptEvents,
+  readCurrentSessionMemorySubject,
   readSessionTranscriptMessageEventCount,
   readSessionTranscriptMessageEvents,
   rewindSessionToMessage,
@@ -98,6 +99,10 @@ async function createSession(options: { activeLeafTarget?: string } = {}) {
     updatedAt: Date.now(),
   };
   await upsertSessionEntry(scope, entry);
+  const sourceSubject = readCurrentSessionMemorySubject(scope);
+  if (!sourceSubject) {
+    throw new Error("expected message-cut source memory subject");
+  }
   for (const event of [
     { type: "session", id: sessionId, version: 3, timestamp: "2026-07-18T00:00:00.000Z" },
     {
@@ -166,7 +171,7 @@ async function createSession(options: { activeLeafTarget?: string } = {}) {
       await appendTranscriptEvent(scope, event);
     }
   }
-  return { env, scope };
+  return { env, scope, sourceSubject };
 }
 
 describe("SQLite session message cuts", () => {
@@ -218,7 +223,7 @@ describe("SQLite session message cuts", () => {
   it.each(["rewind", "switch", "fork"] as const)(
     "%s invalidates the source cache and lists the resulting branch",
     async (mode) => {
-      const { env, scope } = await createSession();
+      const { env, scope, sourceSubject } = await createSession();
       const aliasKey = `${sessionKey}:alias`;
       const targetKey = `${sessionKey}:fork`;
       const sourceEntry = loadSessionEntry(scope);
@@ -247,6 +252,21 @@ describe("SQLite session message cuts", () => {
                 targetKey,
               });
       expect(result.status).toBe("created");
+      if (result.status !== "created") {
+        throw new Error(`expected ${mode} session result`);
+      }
+
+      const resultSubject = readCurrentSessionMemorySubject({
+        agentId,
+        env,
+        sessionKey: mode === "fork" ? targetKey : sessionKey,
+      });
+      if (!resultSubject) {
+        throw new Error(`expected ${mode} memory subject`);
+      }
+      expect(resultSubject.subjectRevision).toBe(sourceSubject.subjectRevision);
+      expect(resultSubject.subject).toEqual(sourceSubject.subject);
+      expect(resultSubject.sessionIdentityRevision).not.toBe(sourceSubject.sessionIdentityRevision);
 
       const loadsBeforeAliasRead = fullTranscriptLoads();
       await listSqliteSessionBranches({ agentId, env, sessionKey: aliasKey });
