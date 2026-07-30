@@ -13,7 +13,10 @@ import {
   type SessionHeader,
   type SessionMessageEntry,
 } from "../../agents/sessions/session-manager.js";
-import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
+import {
+  loadTranscriptEvents,
+  readTranscriptMemoryPolicyExportManifest,
+} from "../../config/sessions/session-accessor.js";
 import { scanSessionTranscriptTree } from "../../config/sessions/transcript-tree.js";
 import type { SessionEntry as StoredSessionEntry } from "../../config/sessions/types.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
@@ -35,6 +38,7 @@ interface SessionData {
   entries: AgentSessionEntry[];
   leafId: string | null;
   hasLeafControl: boolean;
+  memoryPolicyManifest?: ReturnType<typeof readTranscriptMemoryPolicyExportManifest>;
   systemPrompt?: string;
   tools?: Array<{ name: string; description?: string; parameters?: unknown }>;
   warning?: string;
@@ -283,11 +287,17 @@ async function readSessionDataFromIdentity(params: {
   entries: AgentSessionEntry[];
   leafId: string | null;
   hasLeafControl: boolean;
+  memoryPolicyManifest?: ReturnType<typeof readTranscriptMemoryPolicyExportManifest>;
   warnings: SessionExportWarningSummary[];
 }> {
   const events = await loadTranscriptEvents(params);
   const { entries, warnings } = filterSessionEntriesWithWarnings(events);
-  return readSessionDataFromEntries(entries, summarizeSessionExportWarnings(warnings));
+  const sessionData = readSessionDataFromEntries(entries, summarizeSessionExportWarnings(warnings));
+  const memoryPolicyManifest = readTranscriptMemoryPolicyExportManifest(params);
+  return {
+    ...sessionData,
+    ...(memoryPolicyManifest ? { memoryPolicyManifest } : {}),
+  };
 }
 
 function readSessionDataFromEntries(
@@ -341,12 +351,13 @@ export async function buildExportSessionReply(params: HandleCommandsParams): Pro
 
   // Active exports run after startup migration, so SQLite rows are canonical.
   // Do not read sessionFile here; a SQLite marker is an identifier, not a path.
-  const { entries, header, leafId, hasLeafControl, warnings } = await readSessionDataFromIdentity({
-    agentId: sessionTarget.agentId,
-    sessionId: sessionTarget.sessionId,
-    sessionKey: sessionTarget.sessionKey,
-    storePath: sessionTarget.storePath,
-  });
+  const { entries, header, leafId, hasLeafControl, memoryPolicyManifest, warnings } =
+    await readSessionDataFromIdentity({
+      agentId: sessionTarget.agentId,
+      sessionId: sessionTarget.sessionId,
+      sessionKey: sessionTarget.sessionKey,
+      storePath: sessionTarget.storePath,
+    });
 
   // 3. Build full system prompt
   const { systemPrompt, tools } = await resolveCommandsSystemPromptBundle({
@@ -367,6 +378,7 @@ export async function buildExportSessionReply(params: HandleCommandsParams): Pro
     entries,
     leafId,
     hasLeafControl,
+    ...(memoryPolicyManifest ? { memoryPolicyManifest } : {}),
     systemPrompt,
     tools: tools.map((t) => ({
       name: t.name,

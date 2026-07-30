@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
@@ -40,9 +41,12 @@ type TranscriptMemoryPolicyDatabase = Pick<
   | "memory_policy_sets"
   | "memory_run_exposures"
   | "session_memory_subject_snapshots"
+  | "transcript_events"
   | "transcript_event_memory_policy_details"
   | "transcript_event_memory_policy_lineage"
   | "transcript_event_memory_policies"
+  | "transcript_memory_archive_events"
+  | "transcript_memory_archives"
 >;
 
 const enforcementByDatabase = new WeakMap<DatabaseSync, boolean>();
@@ -669,14 +673,35 @@ export type PreservedTranscriptMemoryPolicy = {
   detail: TranscriptEventMemoryPolicyDetails;
   lineage: {
     created_at: number;
+    event_seq: number;
     origin_event_seq: number;
     origin_session_id: string;
+    session_id: string;
     source_event_seq: number;
     source_session_id: string;
     transition_kind: TranscriptMemoryPolicyTransitionKind;
   };
   policy: TranscriptEventMemoryPolicies;
 };
+
+/** One archived transcript row's immutable, currently-evaluable policy evidence. */
+export type TranscriptMemoryArchivePolicySnapshot = Readonly<{
+  eventSeq: number;
+  preserved: PreservedTranscriptMemoryPolicy;
+}>;
+
+/** Portable policy evidence for a transcript export, never reconstructed from event payloads. */
+export type TranscriptMemoryPolicyExportManifest = Readonly<{
+  events: readonly TranscriptMemoryPolicyExportEvent[];
+  schemaVersion: 1;
+  sessionId: string;
+}>;
+
+export type TranscriptMemoryPolicyExportEvent = Readonly<{
+  contentSha256: string;
+  eventSeq: number;
+  preserved: PreservedTranscriptMemoryPolicy;
+}>;
 
 /**
  * Captures only currently evaluable companions before a same-database rewrite.
@@ -728,8 +753,10 @@ export function captureAuthorizedTranscriptMemoryPoliciesInTransaction(params: {
       detail,
       lineage: {
         created_at: lineage.created_at,
+        event_seq: lineage.event_seq,
         origin_event_seq: lineage.origin_event_seq,
         origin_session_id: lineage.origin_session_id,
+        session_id: lineage.session_id,
         source_event_seq: lineage.source_event_seq,
         source_session_id: lineage.source_session_id,
         transition_kind: lineage.transition_kind as TranscriptMemoryPolicyTransitionKind,
@@ -738,6 +765,257 @@ export function captureAuthorizedTranscriptMemoryPoliciesInTransaction(params: {
     });
   }
   return policies;
+}
+
+/** Captures the policy companions that may safely leave the live transcript as an archive. */
+export function captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction(params: {
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+}): readonly TranscriptMemoryArchivePolicySnapshot[] | undefined {
+  const policies = captureAuthorizedTranscriptMemoryPoliciesInTransaction(params);
+  return policies
+    ? [...policies.entries()]
+        .toSorted(([leftEventSeq], [rightEventSeq]) => leftEventSeq - rightEventSeq)
+        .map(([eventSeq, preserved]) => ({ eventSeq, preserved }))
+    : undefined;
+}
+
+/** Returns only the current-policy-evaluable companions for a portable export. */
+export function readTranscriptMemoryPolicyExportManifestFromDatabase(params: {
+  beforeEventSeq?: number;
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+}): TranscriptMemoryPolicyExportManifest | undefined {
+  const policies = captureAuthorizedTranscriptMemoryPoliciesInTransaction(params);
+  if (!policies) {
+    return undefined;
+  }
+  const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+  const events = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .selectFrom("transcript_events")
+      .select(["event_json", "seq"])
+      .where("session_id", "=", params.sessionId)
+      .$if(params.beforeEventSeq !== undefined, (query) =>
+        query.where("seq", "<", params.beforeEventSeq!),
+      )
+      .orderBy("seq", "asc"),
+  ).rows.flatMap((row): TranscriptMemoryPolicyExportEvent[] => {
+    const preserved = policies.get(row.seq);
+    return preserved
+      ? [
+          {
+            contentSha256: createHash("sha256").update(row.event_json, "utf8").digest("hex"),
+            eventSeq: row.seq,
+            preserved,
+          },
+        ]
+      : [];
+  });
+  return { events, schemaVersion: 1, sessionId: params.sessionId };
+}
+
+function archivePolicySnapshotsEqual(
+  left: readonly TranscriptMemoryArchivePolicySnapshot[],
+  right: readonly TranscriptMemoryArchivePolicySnapshot[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (entry, index) =>
+        entry.eventSeq === right[index]?.eventSeq &&
+        JSON.stringify(entry.preserved) === JSON.stringify(right[index]?.preserved),
+    )
+  );
+}
+
+function archivedPolicyRowsMatchSnapshots(params: {
+  rows: ReadonlyArray<{
+    actor_evidence_json: string;
+    archive_event_index: number;
+    context_fingerprint: string;
+    delegation_json: string;
+    delivery_audiences_json: string;
+    detail_created_at: number;
+    exposed_resource_revisions_json: string;
+    finalized_egress_audiences_json: string;
+    lineage_created_at: number;
+    origin_event_seq: number;
+    origin_session_id: string;
+    policy_created_at: number;
+    policy_set_revision: string;
+    run_exposure_revision: number;
+    run_exposure_set_id: string;
+    run_id: string;
+    session_identity_revision: string;
+    source_event_seq: number;
+    source_lineage_event_seq: number;
+    source_policy_set_id: string;
+    source_session_id: string;
+    subject_revision: string;
+    transition_kind: string;
+  }>;
+  snapshots: readonly TranscriptMemoryArchivePolicySnapshot[];
+}): boolean {
+  return (
+    params.rows.length === params.snapshots.length &&
+    params.rows.every((row, index) => {
+      const snapshot = params.snapshots[index];
+      const policy = snapshot?.preserved.policy;
+      const detail = snapshot?.preserved.detail;
+      const lineage = snapshot?.preserved.lineage;
+      return Boolean(
+        snapshot &&
+        policy &&
+        detail &&
+        lineage &&
+        row.archive_event_index === index &&
+        row.source_event_seq === snapshot.eventSeq &&
+        row.source_policy_set_id === policy.source_policy_set_id &&
+        row.run_exposure_set_id === policy.run_exposure_set_id &&
+        row.run_exposure_revision === policy.run_exposure_revision &&
+        row.delivery_audiences_json === policy.delivery_audiences_json &&
+        row.session_identity_revision === policy.session_identity_revision &&
+        row.subject_revision === policy.subject_revision &&
+        row.run_id === policy.run_id &&
+        row.context_fingerprint === policy.context_fingerprint &&
+        row.policy_set_revision === detail.policy_set_revision &&
+        row.actor_evidence_json === detail.actor_evidence_json &&
+        row.delegation_json === detail.delegation_json &&
+        row.finalized_egress_audiences_json === detail.finalized_egress_audiences_json &&
+        row.exposed_resource_revisions_json === detail.exposed_resource_revisions_json &&
+        row.source_session_id === lineage.source_session_id &&
+        row.source_lineage_event_seq === lineage.source_event_seq &&
+        row.origin_session_id === lineage.origin_session_id &&
+        row.origin_event_seq === lineage.origin_event_seq &&
+        row.transition_kind === lineage.transition_kind &&
+        row.policy_created_at === policy.created_at &&
+        row.detail_created_at === detail.created_at &&
+        row.lineage_created_at === lineage.created_at,
+      );
+    })
+  );
+}
+
+/**
+ * Records an archive's companion rows before its live source rows are reclaimed.
+ * The artifact was materialized outside this transaction; this synchronous check
+ * binds its exact bytes to the same policy snapshot that authorized extraction.
+ */
+export function persistTranscriptMemoryArchiveInTransaction(params: {
+  archivePath: string;
+  content: string;
+  database: OpenClawAgentDatabase;
+  reason: "bak" | "deleted" | "reset";
+  sessionId: string;
+  snapshots: readonly TranscriptMemoryArchivePolicySnapshot[];
+}): boolean {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return true;
+  }
+  const current = captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction({
+    database: params.database,
+    sessionId: params.sessionId,
+  });
+  if (!current || !archivePolicySnapshotsEqual(current, params.snapshots)) {
+    return false;
+  }
+  const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+  const contentHash = createHash("sha256").update(params.content, "utf8").digest("hex");
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .insertInto("transcript_memory_archives")
+      .values({
+        archive_path: params.archivePath,
+        source_session_id: params.sessionId,
+        archive_reason: params.reason,
+        content_sha256: contentHash,
+        created_at: Date.now(),
+      })
+      .onConflict((conflict) => conflict.column("archive_path").doNothing()),
+  );
+  const archive = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("transcript_memory_archives")
+      .selectAll()
+      .where("archive_path", "=", params.archivePath),
+  );
+  if (
+    !archive ||
+    archive.source_session_id !== params.sessionId ||
+    archive.archive_reason !== params.reason ||
+    archive.content_sha256 !== contentHash
+  ) {
+    return false;
+  }
+  const existingRows = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .selectFrom("transcript_memory_archive_events")
+      .selectAll()
+      .where("archive_path", "=", params.archivePath)
+      .orderBy("archive_event_index", "asc"),
+  ).rows;
+  if (existingRows.length > 0) {
+    return archivedPolicyRowsMatchSnapshots({ rows: existingRows, snapshots: params.snapshots });
+  }
+  for (const [archiveEventIndex, snapshot] of params.snapshots.entries()) {
+    const { policy, detail, lineage } = snapshot.preserved;
+    if (
+      policy.authorization_status !== "authorized" ||
+      policy.source_policy_set_id === null ||
+      policy.run_exposure_set_id === null ||
+      policy.run_exposure_revision === null ||
+      policy.delivery_audiences_json === null ||
+      policy.session_identity_revision === null ||
+      policy.subject_revision === null ||
+      policy.run_id === null ||
+      policy.context_fingerprint === null
+    ) {
+      return false;
+    }
+    executeSqliteQuerySync(
+      params.database.db,
+      db.insertInto("transcript_memory_archive_events").values({
+        archive_path: params.archivePath,
+        archive_event_index: archiveEventIndex,
+        source_event_seq: snapshot.eventSeq,
+        source_policy_set_id: policy.source_policy_set_id,
+        run_exposure_set_id: policy.run_exposure_set_id,
+        run_exposure_revision: policy.run_exposure_revision,
+        delivery_audiences_json: policy.delivery_audiences_json,
+        session_identity_revision: policy.session_identity_revision,
+        subject_revision: policy.subject_revision,
+        run_id: policy.run_id,
+        context_fingerprint: policy.context_fingerprint,
+        policy_set_revision: detail.policy_set_revision,
+        actor_evidence_json: detail.actor_evidence_json,
+        delegation_json: detail.delegation_json,
+        finalized_egress_audiences_json: detail.finalized_egress_audiences_json,
+        exposed_resource_revisions_json: detail.exposed_resource_revisions_json,
+        source_session_id: lineage.source_session_id,
+        source_lineage_event_seq: lineage.source_event_seq,
+        origin_session_id: lineage.origin_session_id,
+        origin_event_seq: lineage.origin_event_seq,
+        transition_kind: lineage.transition_kind,
+        policy_created_at: policy.created_at,
+        detail_created_at: detail.created_at,
+        lineage_created_at: lineage.created_at,
+      }),
+    );
+  }
+  const persistedRows = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .selectFrom("transcript_memory_archive_events")
+      .selectAll()
+      .where("archive_path", "=", params.archivePath)
+      .orderBy("archive_event_index", "asc"),
+  ).rows;
+  return archivedPolicyRowsMatchSnapshots({ rows: persistedRows, snapshots: params.snapshots });
 }
 
 /** Restores an exact, still-evaluable policy companion after a guarded rewrite. */

@@ -38,8 +38,8 @@ import {
 import {
   captureAuthorizedTranscriptMemoryPoliciesInTransaction,
   copyTranscriptMemoryPolicyInTransaction,
-  recordTranscriptMemoryPolicyInTransaction,
   readAuthorizedTranscriptEventSeqs,
+  recordTranscriptMemoryPolicyInTransaction,
   restoreTranscriptMemoryPolicyInTransaction,
   isTranscriptMemoryPolicyEnforcedInDatabase,
   type PreservedTranscriptMemoryPolicy,
@@ -67,6 +67,8 @@ export function appendTranscriptEventInTransaction(
       sessionId: string;
       transitionKind: TranscriptMemoryPolicyTransitionKind;
     };
+    /** Doctor imports can restore only a byte-bound, currently-evaluable companion. */
+    preservedMemoryPolicy?: PreservedTranscriptMemoryPolicy;
     /** Imports and cross-store transitions lack a locally evaluable source companion. */
     forceMemoryPolicyPending?: boolean;
     onProjectionReconcileNeeded?: () => void;
@@ -121,20 +123,29 @@ export function appendTranscriptEventInTransaction(
     eventSeq: seq,
     createdAt,
     forcePending:
-      options.forceMemoryPolicyPending === true || options.memoryPolicySource !== undefined,
+      options.forceMemoryPolicyPending === true ||
+      options.memoryPolicySource !== undefined ||
+      options.preservedMemoryPolicy !== undefined,
   });
   const memoryPolicyAuthorized =
-    sourceEventSeq === undefined || !options.memoryPolicySource
-      ? initiallyAuthorized
-      : copyTranscriptMemoryPolicyInTransaction({
+    options.preservedMemoryPolicy && !initiallyAuthorized
+      ? restoreTranscriptMemoryPolicyInTransaction({
           database,
-          sourceSessionId: options.memoryPolicySource.sessionId,
-          sourceEventSeq,
-          targetSessionId: scope.sessionId,
-          targetEventSeq: seq,
-          transitionKind: options.memoryPolicySource.transitionKind,
-          createdAt,
-        });
+          preserved: options.preservedMemoryPolicy,
+          sessionId: scope.sessionId,
+          eventSeq: seq,
+        })
+      : sourceEventSeq !== undefined && options.memoryPolicySource
+        ? copyTranscriptMemoryPolicyInTransaction({
+            database,
+            sourceSessionId: options.memoryPolicySource.sessionId,
+            sourceEventSeq,
+            targetSessionId: scope.sessionId,
+            targetEventSeq: seq,
+            transitionKind: options.memoryPolicySource.transitionKind,
+            createdAt,
+          })
+        : initiallyAuthorized;
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
   }
@@ -437,14 +448,9 @@ export function replaceSqliteTranscriptEventsInTransaction(
     return;
   }
   if (!deleted || options.preserveSessionWindowRecency !== true) {
-    ensureTranscriptSessionRoot(
-      database,
-      resolved,
-      readEventTimestamp(events[0]) ?? Date.now(),
-      {
-        ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
-      },
-    );
+    ensureTranscriptSessionRoot(database, resolved, readEventTimestamp(events[0]) ?? Date.now(), {
+      ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
+    });
   }
   if (deleted || previousGeneration) {
     rotateTranscriptGenerationInTransaction(database, resolved.sessionId);

@@ -1,5 +1,7 @@
 // Shared trajectory support-bundle schema. Runtime, transcript, and export code
 // all emit this versioned JSONL shape so external debugging tools can replay it.
+import type { TranscriptMemoryPolicyExportManifest } from "../config/sessions/session-transcript-memory-policy.js";
+
 type TrajectoryEventSource = "runtime" | "transcript" | "export";
 
 // Serialized tool definition captured with compiled context events.
@@ -53,6 +55,8 @@ export type TrajectoryBundleManifest = {
     mediaType: string;
     bytes: number;
   }>;
+  /** Current-policy-evaluable companion rows for the exported transcript only. */
+  memoryPolicyManifest?: TranscriptMemoryPolicyExportManifest;
   supplementalFiles?: string[];
   warnings?: TrajectoryBundleWarning[];
 };

@@ -13,6 +13,7 @@ import {
   listSessionEntries,
   loadSessionEntry,
   loadTranscriptEvents,
+  readTranscriptMemoryPolicyExportManifest,
 } from "../config/sessions/session-accessor.js";
 import type { SessionTranscriptRuntimeTarget } from "../config/sessions/session-accessor.types.js";
 import {
@@ -1235,6 +1236,18 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
   });
   const runtimeFile = runtimeParse.runtimeFile;
   const runtimeEvents = runtimeParse.events;
+  const marker =
+    !sessionTarget && params.sessionFile ? parseSqliteSessionFileMarker(params.sessionFile) : null;
+  const memoryPolicyManifest = sessionTarget
+    ? readTranscriptMemoryPolicyExportManifest(sessionTarget)
+    : marker
+      ? readTranscriptMemoryPolicyExportManifest({
+          agentId: marker.agentId,
+          sessionId: marker.sessionId,
+          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+          storePath: marker.storePath,
+        })
+      : undefined;
   assertCanonicalTrajectoryInputs(branchEntries, runtimeEvents);
   const projectedBranchEntries = branchEntries;
   const transcriptEvents = buildTranscriptEvents({
@@ -1275,6 +1288,7 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
           ? maybeRedactPathString(runtimeFile, redaction)
           : undefined,
     },
+    ...(memoryPolicyManifest ? { memoryPolicyManifest } : {}),
   };
   const warnings = summarizeJsonlWarnings([...sessionWarnings, ...runtimeParse.warnings]);
   if (warnings.length > 0) {

@@ -20,6 +20,7 @@ export {
   readOrCreateSessionMemorySubjectInTransaction,
   readSessionMemorySubjectFromDatabase,
   rehomeSessionMemorySubjectAliases,
+  restoreSessionMemorySubjectIdentityRevisionInTransaction,
   tryRehomeSessionMemorySubjectSnapshot,
 } from "./session-memory-subject-persistence.js";
 export {

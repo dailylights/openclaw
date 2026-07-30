@@ -22,6 +22,7 @@ const AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES = [
   "syncAuthorized",
   "exportAuthorized",
   "statusAuthorized",
+  "prepareTranscriptPolicy",
 ] as const;
 
 type MemoryAuthorizationShadowMetadata = NonNullable<
@@ -56,6 +57,7 @@ function createCompleteRuntime(): MemoryPluginRuntime {
     syncAuthorized: notCalled,
     exportAuthorized: notCalled,
     statusAuthorized: notCalled,
+    prepareTranscriptPolicy: notCalled,
   };
 }
 
@@ -137,6 +139,7 @@ describe("authorized memory read admission", () => {
       authorize: notCalled,
       searchAuthorized: notCalled,
       readAuthorized: notCalled,
+      prepareTranscriptPolicy: notCalled,
     };
   }
 

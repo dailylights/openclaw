@@ -12,6 +12,7 @@ import {
 } from "./archive-compression.js";
 import { formatSessionArchiveTimestamp, type SessionArchiveReason } from "./artifacts.js";
 import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
+import type { TranscriptMemoryArchivePolicySnapshot } from "./session-transcript-memory-policy.js";
 
 export type SqliteSessionStateDeleteSnapshot = {
   acpParentStreamEventCount: number;
@@ -25,6 +26,8 @@ export type SqliteSessionStateDeleteSnapshot = {
 export type SqliteSessionStateDeletePlan = {
   agentId: string;
   archiveDirectory: string;
+  /** Captured before materializing an archive; revalidated before live rows are reclaimed. */
+  archivePolicySnapshots?: readonly TranscriptMemoryArchivePolicySnapshot[];
   archiveTranscript: boolean;
   databasePath: string;
   reason: "deleted" | "reset";

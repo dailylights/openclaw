@@ -35,7 +35,11 @@ const AUTHORIZED_MEMORY_READ_CAPABILITIES = [
 export type AdmittedAuthorizedMemoryReadRuntime = Readonly<
   Pick<
     AuthorizedMemoryRuntime,
-    "authorization" | "authorize" | "searchAuthorized" | "readAuthorized"
+    | "authorization"
+    | "authorize"
+    | "searchAuthorized"
+    | "readAuthorized"
+    | "prepareTranscriptPolicy"
   >
 >;
 
@@ -154,12 +158,14 @@ export async function admitMemoryAuthorizationReadRuntime(
     const authorize = runtime.authorize;
     const searchAuthorized = runtime.searchAuthorized;
     const readAuthorized = runtime.readAuthorized;
+    const prepareTranscriptPolicy = runtime.prepareTranscriptPolicy;
     if (
       !isMemoryAuthorizationCapabilities(authorization) ||
       AUTHORIZED_MEMORY_READ_CAPABILITIES.some((capability) => !authorization[capability]) ||
       typeof authorize !== "function" ||
       typeof searchAuthorized !== "function" ||
       typeof readAuthorized !== "function" ||
+      typeof prepareTranscriptPolicy !== "function" ||
       !isConformanceAdapter(authorizationConformance)
     ) {
       return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
@@ -181,6 +187,9 @@ export async function admitMemoryAuthorizationReadRuntime(
         runtime,
       ),
       readAuthorized: (readAuthorized as AuthorizedMemoryRuntime["readAuthorized"]).bind(runtime),
+      prepareTranscriptPolicy: (
+        prepareTranscriptPolicy as AuthorizedMemoryRuntime["prepareTranscriptPolicy"]
+      ).bind(runtime),
     });
     return Object.freeze({ ok: true, runtime: admittedRuntime });
   })();

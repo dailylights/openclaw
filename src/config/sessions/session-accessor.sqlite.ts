@@ -84,6 +84,7 @@ export {
   loadSqliteTranscriptEventsSync,
   loadSqliteTranscriptHeaderSync,
   loadSqliteTranscriptTailEventsSync,
+  readSqliteTranscriptMemoryPolicyExportManifest,
   readSqliteTranscriptEventAtSeqSync,
   readSqliteTranscriptStatsSync,
 } from "./session-accessor.sqlite-read.js";

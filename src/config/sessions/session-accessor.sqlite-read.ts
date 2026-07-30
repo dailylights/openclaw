@@ -26,7 +26,11 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
-import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
+import {
+  readAuthorizedTranscriptEventSeqs,
+  readTranscriptMemoryPolicyExportManifestFromDatabase,
+  type TranscriptMemoryPolicyExportManifest,
+} from "./session-transcript-memory-policy.js";
 
 function filterAuthorizedTranscriptRows<Row extends { seq: number }>(
   database: OpenClawAgentDatabase,
@@ -72,6 +76,32 @@ export function loadSqliteTranscriptEventsSync(
     {
       databaseLabel: database.path,
       operationLabel: "session transcript fenced read",
+    },
+  );
+}
+
+/** Returns durable policy evidence for the same current-policy-visible export rows. */
+export function readSqliteTranscriptMemoryPolicyExportManifest(
+  scope: SessionTranscriptReadScope,
+): TranscriptMemoryPolicyExportManifest | undefined {
+  const resolved = resolveSqliteTranscriptReadScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  return runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      const beforeEventSeq = resolveSqliteSessionTranscriptReadFence({
+        database,
+        ...resolved,
+      })?.beforeRawSeq;
+      return readTranscriptMemoryPolicyExportManifestFromDatabase({
+        database,
+        sessionId: resolved.sessionId,
+        ...(beforeEventSeq === undefined ? {} : { beforeEventSeq }),
+      });
+    },
+    {
+      databaseLabel: database.path,
+      operationLabel: "session transcript export manifest read",
     },
   );
 }

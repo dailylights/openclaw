@@ -463,6 +463,53 @@ export function persistSessionMemorySubjectInTransaction(params: {
   });
 }
 
+/**
+ * Doctor-only exact lineage import may restore a prior identity revision after
+ * its trusted subject seed has created the target snapshot. Never use this to
+ * infer a subject from transcript content or a session key.
+ */
+export function restoreSessionMemorySubjectIdentityRevisionInTransaction(params: {
+  database: OpenClawAgentDatabase;
+  expectedSessionIdentityRevision: string;
+  expectedSubjectRevision: string;
+  sessionId: string;
+}): boolean {
+  ensureSessionMemorySubjectSchema(params.database);
+  const db = sessionMemoryDb(params.database.db);
+  const snapshot = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("session_memory_subject_snapshots")
+      .select(["session_id", "session_identity_revision", "subject_revision"])
+      .where("session_id", "=", params.sessionId),
+  );
+  if (!snapshot || snapshot.subject_revision !== params.expectedSubjectRevision) {
+    return false;
+  }
+  if (snapshot.session_identity_revision === params.expectedSessionIdentityRevision) {
+    return true;
+  }
+  const existing = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("session_memory_subject_snapshots")
+      .select("session_id")
+      .where("session_identity_revision", "=", params.expectedSessionIdentityRevision),
+  );
+  if (existing && existing.session_id !== params.sessionId) {
+    return false;
+  }
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .updateTable("session_memory_subject_snapshots")
+      .set({ session_identity_revision: params.expectedSessionIdentityRevision })
+      .where("session_id", "=", params.sessionId)
+      .where("subject_revision", "=", params.expectedSubjectRevision),
+  );
+  return true;
+}
+
 export function readSessionMemorySubjectFromDatabase(
   database: OpenClawAgentDatabase,
   sessionKey: string,

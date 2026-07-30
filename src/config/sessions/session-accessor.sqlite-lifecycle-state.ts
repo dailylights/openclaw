@@ -38,6 +38,12 @@ import { cloneSessionEntry, getSessionKysely } from "./session-accessor.sqlite-s
 import { parseSqliteSessionEntryJson as parseSessionEntryRow } from "./session-accessor.sqlite-status.js";
 import { buildSessionResetBoundaryPlan } from "./session-reset-boundary-event.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
+import {
+  captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction,
+  persistTranscriptMemoryArchiveInTransaction,
+  readAuthorizedTranscriptEventSeqs,
+} from "./session-transcript-memory-policy.js";
+import { serializeJsonlLines } from "./transcript-jsonl.js";
 import type { SessionEntry } from "./types.js";
 
 // Transcript-state reclamation owner. Planning stays async-free; transactions revalidate before delete.
@@ -202,6 +208,29 @@ export function readReferencedSqliteSessionIdsAfterTargetMutation(
   return sessionIds;
 }
 
+// The Worker owns archive I/O; this rebuilds its policy-filtered bytes only
+// after the snapshot fence passes, to bind lineage before source rows disappear.
+function readSqliteTranscriptArchiveContent(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+): string {
+  const db = getSessionKysely(database.db);
+  const rows = executeSqliteQuerySync(
+    database.db,
+    db
+      .selectFrom("transcript_events")
+      .select(["event_json", "seq"])
+      .where("session_id", "=", sessionId)
+      .orderBy("seq", "asc"),
+  ).rows;
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(database.db, sessionId);
+  return serializeJsonlLines(
+    rows
+      .filter((row) => !authorizedSeqs || authorizedSeqs.has(row.seq))
+      .map((row) => row.event_json),
+  );
+}
+
 export function planSqliteSessionStateDeleteIfUnreferenced(params: {
   archiveTranscript?: boolean;
   archiveDirectory: string;
@@ -213,11 +242,19 @@ export function planSqliteSessionStateDeleteIfUnreferenced(params: {
   if (params.referencedSessionIds.has(params.sessionId)) {
     return null;
   }
+  const archiveTranscript =
+    params.archiveTranscript !== false && !isIncognitoOpenClawAgentDatabase(params.database);
+  const archivePolicySnapshots = archiveTranscript
+    ? captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction({
+        database: params.database,
+        sessionId: params.sessionId,
+      })
+    : undefined;
   return {
     agentId: params.database.agentId,
     archiveDirectory: params.archiveDirectory,
-    archiveTranscript:
-      params.archiveTranscript !== false && !isIncognitoOpenClawAgentDatabase(params.database),
+    ...(archivePolicySnapshots ? { archivePolicySnapshots } : {}),
+    archiveTranscript,
     databasePath: params.database.path,
     reason: params.reason ?? "deleted",
     sessionId: params.sessionId,
@@ -243,6 +280,22 @@ export function deleteMaterializedSqliteSessionStatePlans(
     const currentSnapshot = readSqliteSessionStateDeleteSnapshot(database.db, plan.sessionId);
     if (!sqliteSessionStateDeleteSnapshotsEqual(currentSnapshot, plan.snapshot)) {
       throw new Error(`SQLite session state changed before deletion for ${plan.sessionId}`);
+    }
+    if (
+      plan.archivedTranscript &&
+      plan.archivePolicySnapshots &&
+      !persistTranscriptMemoryArchiveInTransaction({
+        archivePath: plan.archivedTranscript.archivedPath,
+        content: readSqliteTranscriptArchiveContent(database, plan.sessionId),
+        database,
+        reason: plan.reason,
+        sessionId: plan.sessionId,
+        snapshots: plan.archivePolicySnapshots,
+      })
+    ) {
+      throw new Error(
+        `SQLite transcript policy changed before archive deletion for ${plan.sessionId}`,
+      );
     }
     deleteSqliteSessionStateRows(database, plan.sessionId);
     if (plan.snapshot.lastSeq !== null && plan.archivedTranscript) {

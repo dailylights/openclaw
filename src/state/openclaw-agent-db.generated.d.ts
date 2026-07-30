@@ -789,6 +789,41 @@ export interface TranscriptEvents {
   session_id: string;
 }
 
+export interface TranscriptMemoryArchiveEvents {
+  actor_evidence_json: string;
+  archive_event_index: number;
+  archive_path: string;
+  context_fingerprint: string;
+  delegation_json: string;
+  delivery_audiences_json: string;
+  detail_created_at: number;
+  exposed_resource_revisions_json: string;
+  finalized_egress_audiences_json: string;
+  lineage_created_at: number;
+  origin_event_seq: number;
+  origin_session_id: string;
+  policy_created_at: number;
+  policy_set_revision: string;
+  run_exposure_revision: number;
+  run_exposure_set_id: string;
+  run_id: string;
+  session_identity_revision: string;
+  source_event_seq: number;
+  source_lineage_event_seq: number;
+  source_policy_set_id: string;
+  source_session_id: string;
+  subject_revision: string;
+  transition_kind: string;
+}
+
+export interface TranscriptMemoryArchives {
+  archive_path: string;
+  archive_reason: string;
+  content_sha256: string;
+  created_at: number;
+  source_session_id: string;
+}
+
 export interface TranscriptRewriteWatermarks {
   generation: string;
   session_id: string;
@@ -869,5 +904,7 @@ export interface DB {
   transcript_event_memory_policy_details: TranscriptEventMemoryPolicyDetails;
   transcript_event_memory_policy_lineage: TranscriptEventMemoryPolicyLineage;
   transcript_events: TranscriptEvents;
+  transcript_memory_archive_events: TranscriptMemoryArchiveEvents;
+  transcript_memory_archives: TranscriptMemoryArchives;
   transcript_rewrite_watermarks: TranscriptRewriteWatermarks;
 }

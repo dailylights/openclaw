@@ -1200,6 +1200,65 @@ CREATE TABLE IF NOT EXISTS memory_compaction_policies (
 CREATE INDEX IF NOT EXISTS idx_memory_compaction_policies_session
   ON memory_compaction_policies(session_id, authorization_status, created_at);
 
+-- Archive rows outlive their source transcript rows. Keep the exact policy
+-- companion in SQLite so a cold artifact is never the only authority record.
+CREATE TABLE IF NOT EXISTS transcript_memory_archives (
+  archive_path TEXT NOT NULL PRIMARY KEY,
+  source_session_id TEXT NOT NULL,
+  archive_reason TEXT NOT NULL CHECK (archive_reason IN ('bak', 'reset', 'deleted')),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  created_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS transcript_memory_archives_no_update
+BEFORE UPDATE ON transcript_memory_archives
+BEGIN
+  SELECT RAISE(ABORT, 'transcript memory archives are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS transcript_memory_archive_events (
+  archive_path TEXT NOT NULL,
+  archive_event_index INTEGER NOT NULL CHECK (archive_event_index >= 0),
+  source_event_seq INTEGER NOT NULL CHECK (source_event_seq >= 0),
+  source_policy_set_id TEXT NOT NULL,
+  run_exposure_set_id TEXT NOT NULL,
+  run_exposure_revision INTEGER NOT NULL,
+  delivery_audiences_json TEXT NOT NULL,
+  session_identity_revision TEXT NOT NULL,
+  subject_revision TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  context_fingerprint TEXT NOT NULL,
+  policy_set_revision TEXT NOT NULL,
+  actor_evidence_json TEXT NOT NULL,
+  delegation_json TEXT NOT NULL,
+  finalized_egress_audiences_json TEXT NOT NULL,
+  exposed_resource_revisions_json TEXT NOT NULL,
+  source_session_id TEXT NOT NULL,
+  source_lineage_event_seq INTEGER NOT NULL CHECK (source_lineage_event_seq >= 0),
+  origin_session_id TEXT NOT NULL,
+  origin_event_seq INTEGER NOT NULL CHECK (origin_event_seq >= 0),
+  transition_kind TEXT NOT NULL CHECK (transition_kind IN (
+    'append', 'archive', 'branch', 'checkpoint', 'export', 'fork', 'import', 'reset', 'rewind'
+  )),
+  policy_created_at INTEGER NOT NULL,
+  detail_created_at INTEGER NOT NULL,
+  lineage_created_at INTEGER NOT NULL,
+  PRIMARY KEY (archive_path, archive_event_index),
+  UNIQUE (archive_path, source_event_seq),
+  FOREIGN KEY (archive_path) REFERENCES transcript_memory_archives(archive_path) ON DELETE CASCADE,
+  FOREIGN KEY (source_policy_set_id) REFERENCES memory_policy_sets(policy_set_id) ON DELETE RESTRICT,
+  FOREIGN KEY (run_exposure_set_id) REFERENCES memory_run_exposures(exposure_set_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_transcript_memory_archive_events_origin
+  ON transcript_memory_archive_events(origin_session_id, origin_event_seq);
+
+CREATE TRIGGER IF NOT EXISTS transcript_memory_archive_events_no_update
+BEFORE UPDATE ON transcript_memory_archive_events
+BEGIN
+  SELECT RAISE(ABORT, 'transcript memory archive events are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS standing_intents (
   intent_key INTEGER PRIMARY KEY,
   id TEXT NOT NULL UNIQUE,

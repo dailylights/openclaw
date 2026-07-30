@@ -145,6 +145,7 @@ export async function forkSqliteSessionTranscriptFromParent(
     const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
     runOpenClawAgentWriteTransaction((database) => {
       writeSqliteForkedChildTranscriptInTransaction(database, targetScope, {
+        forceMemoryPolicyPending: true,
         memorySubjectSeed: captured.memorySubjectSeed,
         parentSessionFile: captured.parentSessionFile,
         source: captured.source,
@@ -469,6 +470,7 @@ function writeSqliteForkedChildTranscriptInTransaction(
   database: OpenClawAgentDatabase,
   targetScope: ResolvedTranscriptScope,
   params: {
+    forceMemoryPolicyPending?: boolean;
     memorySubjectSeed: TrustedSessionMemorySubjectSeed;
     parentSessionFile: string;
     source: SqliteParentForkSourceTranscript;
@@ -484,7 +486,11 @@ function writeSqliteForkedChildTranscriptInTransaction(
       targetSessionId: targetScope.sessionId,
     }),
     {
-      memoryPolicySource: { sessionId: params.sourceSessionId, transitionKind: "fork" },
+      // A different database cannot prove that a same-named source session is
+      // the captured parent. Pending blocks ID collisions from inheriting it.
+      ...(params.forceMemoryPolicyPending
+        ? { forceMemoryPolicyPending: true }
+        : { memoryPolicySource: { sessionId: params.sourceSessionId, transitionKind: "fork" } }),
       memorySubjectSeed: params.memorySubjectSeed,
     },
   );

@@ -36,6 +36,7 @@ const hoisted = await vi.hoisted(async () => {
       (params: { sessionKey: string; entry?: { sessionId?: string } }) => unknown
     >(() => undefined),
     loadTranscriptEventsMock: vi.fn(async (): Promise<unknown[]> => []),
+    readTranscriptMemoryPolicyExportManifestMock: vi.fn(() => undefined),
     exportHtmlTemplateContents: new Map<string, string>(),
     sessionTranscriptEvents: [] as unknown[],
   };
@@ -59,6 +60,7 @@ vi.mock("../../config/sessions/session-accessor.js", () => {
     loadSessionEntry,
     loadSessionEntryReadOnly: loadSessionEntry,
     loadTranscriptEvents: hoisted.loadTranscriptEventsMock,
+    readTranscriptMemoryPolicyExportManifest: hoisted.readTranscriptMemoryPolicyExportManifestMock,
   };
 });
 
@@ -299,6 +301,41 @@ describe("buildExportSessionReply", () => {
       ).toString("base64"),
     );
     expect(html).toContain('const base64 = document.getElementById("session-data").textContent;');
+  });
+
+  it("embeds the current-policy transcript manifest without deriving it from session entries", async () => {
+    const memoryPolicyManifest = {
+      schemaVersion: 1 as const,
+      sessionId: "session-1",
+      events: [
+        {
+          eventSeq: 3,
+          preserved: {
+            policy: { source_policy_set_id: "policy-set-1" },
+            detail: { policy_set_revision: "revision-1" },
+            lineage: {
+              source_session_id: "session-1",
+              source_event_seq: 3,
+              origin_session_id: "session-1",
+              origin_event_seq: 3,
+              transition_kind: "append",
+              created_at: 1,
+            },
+          },
+        },
+      ],
+    };
+    hoisted.readTranscriptMemoryPolicyExportManifestMock.mockReturnValueOnce(memoryPolicyManifest);
+
+    await buildExportSessionReply(makeParams());
+
+    expect(hoisted.readTranscriptMemoryPolicyExportManifestMock).toHaveBeenCalledWith({
+      agentId: "target",
+      sessionId: "session-1",
+      sessionKey: "agent:target:session",
+      storePath: "/tmp/target-store/sessions.json",
+    });
+    expect(sessionDataFromHtml(writtenHtml())).toMatchObject({ memoryPolicyManifest });
   });
 
   it("exports the active target selected by a terminal leaf control", async () => {

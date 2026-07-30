@@ -8,16 +8,30 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { readSessionArchiveContentSync } from "./archive-compression.js";
 import {
   appendTranscriptMessage,
+  forkSessionFromParentTranscript,
   loadTranscriptEvents,
+  readCurrentSessionMemorySubject,
+  readTranscriptMemoryPolicyExportManifest,
   readTranscriptRawDelta,
   readTranscriptStatsSync,
+  replaceSessionEntry,
+  replaceTranscriptEvents,
   upsertSessionEntry,
   withTranscriptWriteLock,
 } from "./session-accessor.js";
-import { copyTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
+import { materializeSqliteSessionStateDeletePlans } from "./session-accessor.sqlite-archive.js";
+import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
+import {
+  deleteMaterializedSqliteSessionStatePlans,
+  planSqliteSessionStateDeleteIfUnreferenced,
+} from "./session-accessor.sqlite-lifecycle-state.js";
+import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
+import { prepareSessionMemorySubjectLineageSeed } from "./session-memory-subject.js";
+import { copyTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
 import { transcriptMemoryPolicyTesting } from "./session-transcript-memory-policy.test-support.js";
 
 type TestScope = {
@@ -417,6 +431,441 @@ describe("transcript memory policy", () => {
       origin_event_seq: 1,
       transition_kind: "fork",
     });
+  });
+
+  it("persists immutable policy lineage with an archive before reclaiming source rows", async () => {
+    const scope = await createScope("archive-lineage");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "archive-message",
+      message: { role: "user", content: "retained with its policy lineage" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+
+    const plan = planSqliteSessionStateDeleteIfUnreferenced({
+      archiveDirectory: path.join(scope.env.OPENCLAW_STATE_DIR ?? "", "archives"),
+      archiveTranscript: true,
+      database,
+      reason: "deleted",
+      referencedSessionIds: new Set(),
+      sessionId: scope.sessionId,
+    });
+    expect(readTranscriptMemoryPolicyExportManifest(scope)).toMatchObject({
+      sessionId: scope.sessionId,
+      events: [
+        { eventSeq: 0, preserved: { lineage: { transition_kind: "append" } } },
+        { eventSeq: 1, preserved: { lineage: { transition_kind: "append" } } },
+      ],
+    });
+    expect(plan?.archivePolicySnapshots?.map((snapshot) => snapshot.eventSeq)).toEqual([0, 1]);
+    if (!plan) {
+      throw new Error("expected an archive deletion plan");
+    }
+    const [materialized] = await materializeSqliteSessionStateDeletePlans([plan]);
+    if (!materialized?.archivedTranscript) {
+      throw new Error("expected a materialized archive");
+    }
+
+    runOpenClawAgentWriteTransaction(
+      (transactionDb) => {
+        expect(
+          deleteMaterializedSqliteSessionStatePlans(
+            transactionDb,
+            [materialized],
+            undefined,
+            new Set([scope.sessionKey]),
+          ),
+        ).toHaveLength(1);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(
+      database.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM transcript_event_memory_policies WHERE session_id = ?",
+        )
+        .get(scope.sessionId),
+    ).toEqual({ count: 0 });
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_session_id, archive_reason
+             FROM transcript_memory_archives
+            WHERE archive_path = ?`,
+        )
+        .get(materialized.archivedTranscript.archivedPath),
+    ).toEqual({ source_session_id: scope.sessionId, archive_reason: "deleted" });
+    expect(
+      database.db
+        .prepare(
+          `SELECT archive_event_index, source_event_seq, source_policy_set_id,
+                  source_session_id, origin_session_id, transition_kind
+             FROM transcript_memory_archive_events
+            WHERE archive_path = ?
+            ORDER BY archive_event_index ASC`,
+        )
+        .all(materialized.archivedTranscript.archivedPath),
+    ).toEqual([
+      expect.objectContaining({
+        archive_event_index: 0,
+        source_event_seq: 0,
+        source_session_id: scope.sessionId,
+        origin_session_id: scope.sessionId,
+        transition_kind: "append",
+      }),
+      expect.objectContaining({
+        archive_event_index: 1,
+        source_event_seq: 1,
+        source_session_id: scope.sessionId,
+        origin_session_id: scope.sessionId,
+        transition_kind: "append",
+      }),
+    ]);
+  });
+
+  it("fails closed when an archive policy changes after materialization", async () => {
+    const scope = await createScope("archive-revocation");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "archive-message",
+      message: { role: "user", content: "must not be reclaimed after revocation" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const plan = planSqliteSessionStateDeleteIfUnreferenced({
+      archiveDirectory: path.join(scope.env.OPENCLAW_STATE_DIR ?? "", "archives"),
+      archiveTranscript: true,
+      database,
+      reason: "deleted",
+      referencedSessionIds: new Set(),
+      sessionId: scope.sessionId,
+    });
+    if (!plan) {
+      throw new Error("expected an archive deletion plan");
+    }
+    const [materialized] = await materializeSqliteSessionStateDeletePlans([plan]);
+    if (!materialized) {
+      throw new Error("expected a materialized archive plan");
+    }
+    database.db
+      .prepare(
+        "UPDATE memory_policies SET revocation_epoch = 1, updated_at = 2 WHERE policy_id = 'stable-policy-1'",
+      )
+      .run();
+
+    expect(() =>
+      runOpenClawAgentWriteTransaction(
+        (transactionDb) => {
+          deleteMaterializedSqliteSessionStatePlans(
+            transactionDb,
+            [materialized],
+            undefined,
+            new Set([scope.sessionKey]),
+          );
+        },
+        { agentId: scope.agentId, env: scope.env },
+      ),
+    ).toThrow("SQLite transcript changed before archive deletion");
+    expect(
+      database.db
+        .prepare("SELECT COUNT(*) AS count FROM transcript_events WHERE session_id = ?")
+        .get(scope.sessionId),
+    ).toEqual({ count: 2 });
+    expect(
+      database.db.prepare("SELECT COUNT(*) AS count FROM transcript_memory_archives").get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("excludes pending rows from archive content and companion metadata", async () => {
+    const scope = await createScope("archive-pending");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "pending-message",
+      message: { role: "user", content: "must not enter the archive" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+
+    const plan = planSqliteSessionStateDeleteIfUnreferenced({
+      archiveDirectory: path.join(scope.env.OPENCLAW_STATE_DIR ?? "", "archives"),
+      archiveTranscript: true,
+      database,
+      reason: "deleted",
+      referencedSessionIds: new Set(),
+      sessionId: scope.sessionId,
+    });
+    expect(plan?.archivePolicySnapshots?.map((snapshot) => snapshot.eventSeq)).toEqual([0]);
+    if (!plan) {
+      throw new Error("expected an archive deletion plan");
+    }
+    const [materialized] = await materializeSqliteSessionStateDeletePlans([plan]);
+    if (!materialized?.archivedTranscript) {
+      throw new Error("expected a materialized archive");
+    }
+    expect(
+      readSessionArchiveContentSync(materialized.archivedTranscript.archivedPath),
+    ).not.toContain("pending-message");
+    runOpenClawAgentWriteTransaction(
+      (transactionDb) => {
+        deleteMaterializedSqliteSessionStatePlans(
+          transactionDb,
+          [materialized],
+          undefined,
+          new Set([scope.sessionKey]),
+        );
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seq
+             FROM transcript_memory_archive_events
+            WHERE archive_path = ?`,
+        )
+        .all(materialized.archivedTranscript.archivedPath),
+    ).toEqual([{ source_event_seq: 0 }]);
+  });
+
+  it("restores a confirmed import only when its manifest binds the exact event bytes", async () => {
+    const scope = await createScope("confirmed-import");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "confirmed-message",
+      message: { role: "user", content: "restore only with companion evidence" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const manifest = readTranscriptMemoryPolicyExportManifest(scope);
+    const subject = readCurrentSessionMemorySubject(scope);
+    const events = await loadTranscriptEvents(scope);
+    if (!manifest || !subject) {
+      throw new Error("expected a current-policy manifest and source subject");
+    }
+
+    // Keep policy-set and run-exposure history, but make this a genuine import
+    // into a newly materialized transcript generation with the same identity.
+    database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
+    await importSqliteSessionRows({
+      agentId: scope.agentId,
+      confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
+      confirmedTranscriptPolicyManifest: manifest,
+      entry: { sessionId: scope.sessionId, updatedAt: 2 },
+      env: scope.env,
+      readTranscriptEvents(append) {
+        for (const event of events) {
+          append(event);
+        }
+      },
+      sessionKey: scope.sessionKey,
+    });
+
+    expect(
+      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
+    ).toEqual([scope.sessionId, "confirmed-message"]);
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status, source_policy_set_id
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toMatchObject({ authorization_status: "authorized" });
+  });
+
+  it("leaves a manifest-mismatched import pending", async () => {
+    const scope = await createScope("mismatched-import");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "confirmed-message",
+      message: { role: "user", content: "original bytes" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const manifest = readTranscriptMemoryPolicyExportManifest(scope);
+    const subject = readCurrentSessionMemorySubject(scope);
+    const events = await loadTranscriptEvents(scope);
+    if (!manifest || !subject) {
+      throw new Error("expected a current-policy manifest and source subject");
+    }
+    database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
+    await importSqliteSessionRows({
+      agentId: scope.agentId,
+      confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
+      confirmedTranscriptPolicyManifest: manifest,
+      entry: { sessionId: scope.sessionId, updatedAt: 2 },
+      env: scope.env,
+      readTranscriptEvents(append) {
+        append(events[0] as object);
+        append({
+          type: "message",
+          id: "confirmed-message",
+          parentId: null,
+          message: { role: "user", content: "tampered bytes" },
+        });
+      },
+      sessionKey: scope.sessionKey,
+    });
+
+    expect(await loadTranscriptEvents(scope)).toEqual([events[0]]);
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending" });
+  });
+
+  it("rejects a manifest whose companion is bound to another source event", async () => {
+    const scope = await createScope("mismatched-manifest-sequence");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "confirmed-message",
+      message: { role: "user", content: "original bytes" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const manifest = readTranscriptMemoryPolicyExportManifest(scope);
+    const subject = readCurrentSessionMemorySubject(scope);
+    const events = await loadTranscriptEvents(scope);
+    if (!manifest || !subject) {
+      throw new Error("expected a current-policy manifest and source subject");
+    }
+    const mismatchedManifest = {
+      ...manifest,
+      events: manifest.events.map((event) =>
+        event.eventSeq === 1 ? { ...event, eventSeq: 2 } : event,
+      ),
+    };
+    database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
+    await importSqliteSessionRows({
+      agentId: scope.agentId,
+      confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
+      confirmedTranscriptPolicyManifest: mismatchedManifest,
+      entry: { sessionId: scope.sessionId, updatedAt: 2 },
+      env: scope.env,
+      readTranscriptEvents(append) {
+        for (const event of events) {
+          append(event);
+        }
+      },
+      sessionKey: scope.sessionKey,
+    });
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending" });
+  });
+
+  it("keeps cross-database parent forks pending", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-cross-fork-"));
+    tempDirs.push(root);
+    const sourceStorePath = path.join(root, "source", "sessions.json");
+    const targetStorePath = path.join(root, "target", "sessions.json");
+    const sourceSessionId = "shared-source-id";
+    const sourceSessionKey = "agent:source:parent";
+    const targetSessionKey = "agent:target:child";
+    await replaceTranscriptEvents(
+      {
+        agentId: "source",
+        sessionId: sourceSessionId,
+        sessionKey: sourceSessionKey,
+        storePath: sourceStorePath,
+      },
+      [
+        { type: "session", version: 3, id: sourceSessionId },
+        {
+          type: "message",
+          id: "source-message",
+          parentId: null,
+          message: { role: "user", content: "source content" },
+        },
+      ],
+    );
+    await replaceSessionEntry(
+      { agentId: "source", sessionKey: sourceSessionKey, storePath: sourceStorePath },
+      { sessionId: sourceSessionId, updatedAt: 1 },
+    );
+    const targetResolved = resolveSqliteScope({
+      agentId: "target",
+      sessionKey: targetSessionKey,
+      storePath: targetStorePath,
+    });
+    const targetDatabase = openOpenClawAgentDatabase(toDatabaseOptions(targetResolved));
+    targetDatabase.db
+      .prepare(
+        `INSERT INTO memory_migrations
+          (migration_id, source_kind, source_hash, phase, classification_json, plan_hash,
+           verified_at, cutover_at, updated_at)
+         VALUES (?, 'test', ?, 'cutover', '{}', ?, 1, 1, 1)`,
+      )
+      .run("target-cutover", "target-source", "target-plan");
+    transcriptMemoryPolicyTesting.resetDatabase(targetDatabase.db);
+
+    const forked = await forkSessionFromParentTranscript({
+      agentId: "source",
+      parentEntry: { sessionId: sourceSessionId, updatedAt: 1 },
+      parentSessionKey: sourceSessionKey,
+      sessionKey: targetSessionKey,
+      storePath: sourceStorePath,
+      targetStorePath,
+    });
+    if (forked.status !== "created") {
+      throw new Error("expected cross-database parent fork");
+    }
+
+    expect(
+      targetDatabase.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ?
+            ORDER BY event_seq ASC`,
+        )
+        .all(forked.transcript.sessionId),
+    ).toEqual([{ authorization_status: "pending" }]);
   });
 
   it("preserves exact companions across replacement and leaves new rows pending", async () => {
