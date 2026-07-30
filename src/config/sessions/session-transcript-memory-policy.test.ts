@@ -82,6 +82,14 @@ function insertPolicyFixture(params: {
   scope: TestScope;
   eventSeq: number;
   labelRunId?: string;
+  stablePolicyId?: string;
+  policyRevisionId?: string;
+  memoryPolicyRevision?: string;
+  memberPolicySetIds?: readonly string[];
+  audiences?: readonly { kind: string; id: string }[];
+  policySetRevision?: string;
+  exposureSetId?: string;
+  exposureRunId?: string;
 }): void {
   const database = openOpenClawAgentDatabase({
     agentId: params.scope.agentId,
@@ -99,15 +107,18 @@ function insertPolicyFixture(params: {
   if (!snapshot) {
     throw new Error("missing test subject snapshot");
   }
-  const memberPolicySetIds = ["source-policy-1"];
+  const stablePolicyId = params.stablePolicyId ?? "stable-policy-1";
+  const policyRevisionId = params.policyRevisionId ?? "stable-policy-revision-1";
+  const memoryPolicyRevision = params.memoryPolicyRevision ?? "policy-revision-1";
+  const memberPolicySetIds = params.memberPolicySetIds ?? ["source-policy-1"];
   const policySetId = createEffectiveMemoryPolicySetId({
-    memoryPolicyRevision: "policy-revision-1",
+    memoryPolicyRevision,
     memberPolicySetIds,
   });
-  const stablePolicyId = "stable-policy-1";
-  const policyRevisionId = "stable-policy-revision-1";
-  const exposureSetId = "exposure-set-1";
-  const audiencesJson = JSON.stringify([{ kind: "user", id: "principal-1" }]);
+  const exposureSetId = params.exposureSetId ?? "exposure-set-1";
+  const exposureRunId = params.exposureRunId ?? "run-1";
+  const policySetRevision = params.policySetRevision ?? "policy-set-revision-1";
+  const audiencesJson = JSON.stringify(params.audiences ?? [{ kind: "user", id: "principal-1" }]);
   database.db
     .prepare(
       `INSERT OR IGNORE INTO memory_policies
@@ -132,7 +143,7 @@ function insertPolicyFixture(params: {
     .run(
       policySetId,
       params.scope.agentId,
-      "policy-revision-1",
+      memoryPolicyRevision,
       JSON.stringify(memberPolicySetIds),
     );
   database.db
@@ -140,9 +151,9 @@ function insertPolicyFixture(params: {
       `INSERT OR IGNORE INTO memory_policy_set_metadata
         (policy_set_id, policy_set_revision, source_policy_set_ids_json,
          normalized_audience_intersection_json, retention_state, created_at)
-       VALUES (?, 'policy-set-revision-1', ?, ?, 'active', 1)`,
+       VALUES (?, ?, ?, ?, 'active', 1)`,
     )
-    .run(policySetId, JSON.stringify(memberPolicySetIds), audiencesJson);
+    .run(policySetId, policySetRevision, JSON.stringify(memberPolicySetIds), audiencesJson);
   database.db
     .prepare(
       `INSERT OR IGNORE INTO memory_policy_set_requirements
@@ -158,12 +169,13 @@ function insertPolicyFixture(params: {
          previous_exposure_set_id, source_policy_set_ids_json, effective_source_policy_set_id,
          exposed_resource_revisions_json, exposure_receipt_ids_json, egress_receipt_ids_json,
          delivery_audiences_json, delivery_revision, egress_registry_revision, created_at)
-       VALUES (?, ?, 'run-1', 'context-1', 'plan-1', 1, NULL, ?, ?, '[]', '[]', '[]', ?,
+       VALUES (?, ?, ?, 'context-1', 'plan-1', 1, NULL, ?, ?, '[]', '[]', '[]', ?,
                'delivery-1', 'registry-1', 1)`,
     )
     .run(
       exposureSetId,
       params.scope.agentId,
+      exposureRunId,
       JSON.stringify(memberPolicySetIds),
       policySetId,
       audiencesJson,
@@ -184,7 +196,7 @@ function insertPolicyFixture(params: {
       audiencesJson,
       snapshot.session_identity_revision,
       snapshot.subject_revision,
-      params.labelRunId ?? "run-1",
+      params.labelRunId ?? exposureRunId,
     );
   database.db
     .prepare(
@@ -192,11 +204,12 @@ function insertPolicyFixture(params: {
         (session_id, event_seq, policy_set_revision, actor_evidence_json, delegation_json,
          finalized_egress_audiences_json, exposed_resource_revisions_json,
          origin_session_id, origin_event_seq, created_at)
-       VALUES (?, ?, 'policy-set-revision-1', '{}', 'null', ?, '[]', ?, ?, 1)`,
+       VALUES (?, ?, ?, '{}', 'null', ?, '[]', ?, ?, 1)`,
     )
     .run(
       params.scope.sessionId,
       params.eventSeq,
+      policySetRevision,
       audiencesJson,
       params.scope.sessionId,
       params.eventSeq,
@@ -449,15 +462,48 @@ describe("transcript memory policy", () => {
     expect(
       database.db
         .prepare(
-          `SELECT authorization_status, policy_set_revision, source_event_seqs_json
-             FROM memory_compaction_policies
-            WHERE compaction_id = ?`,
+          `SELECT authorization_status, policy_set_revision, source_event_seqs_json, source_policy_set_id
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
         )
-        .get("compaction-policy-event"),
-    ).toEqual({
+        .get(scope.sessionId, "compaction-policy-event"),
+    ).toMatchObject({
       authorization_status: "authorized",
-      policy_set_revision: "policy-set-revision-1",
       source_event_seqs_json: '["0","1","2"]',
+    });
+    const binding = database.db
+      .prepare(
+        `SELECT policy_set_revision, source_policy_set_id
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "compaction-policy-event") as {
+      policy_set_revision: string;
+      source_policy_set_id: string;
+    };
+    expect(binding.source_policy_set_id).not.toBe(
+      createEffectiveMemoryPolicySetId({
+        memoryPolicyRevision: "policy-revision-1",
+        memberPolicySetIds: ["source-policy-1"],
+      }),
+    );
+    expect(
+      database.db
+        .prepare(
+          `SELECT normalized_audience_intersection_json, policy_set_revision, source_policy_set_ids_json
+             FROM memory_policy_set_metadata
+            WHERE policy_set_id = ?`,
+        )
+        .get(binding.source_policy_set_id),
+    ).toEqual({
+      normalized_audience_intersection_json: '[{"kind":"user","id":"principal-1"}]',
+      policy_set_revision: binding.policy_set_revision,
+      source_policy_set_ids_json: JSON.stringify([
+        createEffectiveMemoryPolicySetId({
+          memoryPolicyRevision: "policy-revision-1",
+          memberPolicySetIds: ["source-policy-1"],
+        }),
+      ]),
     });
     await expect(loadTranscriptEvents(scope)).resolves.toHaveLength(4);
 
@@ -467,6 +513,347 @@ describe("transcript memory policy", () => {
       )
       .run();
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("derives compaction authority from the common source audience and stable requirements", async () => {
+    const scope = await createScope("compaction-derived-policy");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "derived-source-user",
+      message: { role: "user", content: "source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "derived-source-assistant",
+      message: { role: "assistant", content: "source assistant" },
+    });
+    await replaceSqliteTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "derived-source-user",
+        id: "derived-compaction-event",
+        parentId: "derived-source-assistant",
+        summary: "authorized source summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    insertPolicyFixture({
+      scope,
+      eventSeq: 2,
+      stablePolicyId: "stable-policy-conversation",
+      policyRevisionId: "stable-policy-conversation-revision-1",
+      memoryPolicyRevision: "policy-revision-conversation-1",
+      memberPolicySetIds: ["source-policy-conversation"],
+      audiences: [
+        { kind: "conversation", id: "conversation-1" },
+        { kind: "user", id: "principal-1" },
+      ],
+      policySetRevision: "policy-set-revision-conversation-1",
+      exposureSetId: "exposure-set-conversation",
+      exposureRunId: "run-conversation",
+    });
+    insertPolicyFixture({ scope, eventSeq: 3 });
+
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "derived-compaction-event",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1, 2],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    const binding = database.db
+      .prepare(
+        `SELECT source_policy_set_id
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "derived-compaction-event") as { source_policy_set_id: string };
+    expect(
+      database.db
+        .prepare(
+          `SELECT normalized_audience_intersection_json, source_policy_set_ids_json
+             FROM memory_policy_set_metadata
+            WHERE policy_set_id = ?`,
+        )
+        .get(binding.source_policy_set_id),
+    ).toEqual({
+      normalized_audience_intersection_json: '[{"kind":"user","id":"principal-1"}]',
+      source_policy_set_ids_json: JSON.stringify(
+        [
+          createEffectiveMemoryPolicySetId({
+            memoryPolicyRevision: "policy-revision-1",
+            memberPolicySetIds: ["source-policy-1"],
+          }),
+          createEffectiveMemoryPolicySetId({
+            memoryPolicyRevision: "policy-revision-conversation-1",
+            memberPolicySetIds: ["source-policy-conversation"],
+          }),
+        ].toSorted(),
+      ),
+    });
+    expect(
+      database.db
+        .prepare(
+          `SELECT stable_policy_id
+             FROM memory_policy_set_requirements
+            WHERE policy_set_id = ?
+            ORDER BY stable_policy_id`,
+        )
+        .all(binding.source_policy_set_id),
+    ).toEqual([
+      { stable_policy_id: "stable-policy-1" },
+      { stable_policy_id: "stable-policy-conversation" },
+    ]);
+    await expect(loadTranscriptEvents(scope)).resolves.toHaveLength(4);
+
+    database.db
+      .prepare(
+        `UPDATE memory_policies
+            SET revocation_epoch = 1, updated_at = 2
+          WHERE policy_id = 'stable-policy-conversation'`,
+      )
+      .run();
+    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("denies compaction when source audiences have no common target", async () => {
+    const scope = await createScope("compaction-mixed-audience");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "mixed-source-user",
+      message: { role: "user", content: "source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "mixed-source-assistant",
+      message: { role: "assistant", content: "source assistant" },
+    });
+    await replaceSqliteTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "mixed-source-user",
+        id: "mixed-compaction-event",
+        parentId: "mixed-source-assistant",
+        summary: "must remain unavailable",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    insertPolicyFixture({
+      scope,
+      eventSeq: 2,
+      stablePolicyId: "stable-policy-channel",
+      policyRevisionId: "stable-policy-channel-revision-1",
+      memoryPolicyRevision: "policy-revision-channel-1",
+      memberPolicySetIds: ["source-policy-channel"],
+      audiences: [{ kind: "conversation", id: "conversation-1" }],
+      policySetRevision: "policy-set-revision-channel-1",
+      exposureSetId: "exposure-set-channel",
+      exposureRunId: "run-channel",
+    });
+    insertPolicyFixture({ scope, eventSeq: 3 });
+
+    runOpenClawAgentWriteTransaction(
+      (database) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "mixed-compaction-event",
+            database,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1, 2],
+          }),
+        ).toBe(false);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.not.toContain("mixed-compaction-event");
+  });
+
+  it("keeps identical compaction IDs isolated to their own transcript sessions", async () => {
+    const scope = await createScope("compaction-session-binding");
+    const target = {
+      ...scope,
+      sessionId: `${scope.sessionId}-target`,
+      sessionKey: `${scope.sessionKey}-target`,
+    };
+    for (const current of [scope, target]) {
+      await upsertSessionEntry(current, {
+        sessionFile: "sqlite",
+        sessionId: current.sessionId,
+        updatedAt: 1,
+      });
+      await appendTranscriptMessage(current, {
+        eventId: "shared-compaction-source-user",
+        message: { role: "user", content: "source user" },
+      });
+      await appendTranscriptMessage(current, {
+        eventId: "shared-compaction-source-assistant",
+        message: { role: "assistant", content: "source assistant" },
+      });
+      await replaceSqliteTranscriptEvents(current, [
+        ...(await loadTranscriptEvents(current)),
+        {
+          firstKeptEntryId: "shared-compaction-source-user",
+          id: "copied-compaction-id",
+          parentId: "shared-compaction-source-assistant",
+          summary: "session-specific summary",
+          tokensBefore: 10,
+          type: "compaction",
+        },
+      ]);
+    }
+    const database = insertCutover(scope);
+    for (const current of [scope, target]) {
+      for (const eventSeq of [0, 1, 2, 3]) {
+        insertPolicyFixture({ scope: current, eventSeq });
+      }
+      runOpenClawAgentWriteTransaction(
+        (writeDatabase) => {
+          expect(
+            recordTranscriptCompactionPolicyInTransaction({
+              compactionId: "copied-compaction-id",
+              database: writeDatabase,
+              eventSeq: 3,
+              sessionId: current.sessionId,
+              sourceEventSeqs: [0, 1, 2],
+            }),
+          ).toBe(true);
+        },
+        { agentId: scope.agentId, env: scope.env },
+      );
+    }
+    expect(
+      database.db
+        .prepare(
+          `SELECT session_id
+             FROM memory_compaction_policy_bindings
+            WHERE compaction_id = ?
+            ORDER BY session_id`,
+        )
+        .all("copied-compaction-id"),
+    ).toEqual([{ session_id: scope.sessionId }, { session_id: target.sessionId }]);
+  });
+
+  it("carries a prior summary's derived policy into the next compaction", async () => {
+    const scope = await createScope("nested-compaction-policy");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "nested-source-user",
+      message: { role: "user", content: "source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "nested-source-assistant",
+      message: { role: "assistant", content: "source assistant" },
+    });
+    await replaceSqliteTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "nested-source-user",
+        id: "nested-compaction-first",
+        parentId: "nested-source-assistant",
+        summary: "first summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+      {
+        firstKeptEntryId: "nested-source-user",
+        id: "nested-compaction-second",
+        parentId: "nested-compaction-first",
+        summary: "second summary",
+        tokensBefore: 20,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2, 3, 4]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "nested-compaction-first",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1, 2],
+          }),
+        ).toBe(true);
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "nested-compaction-second",
+            database: writeDatabase,
+            eventSeq: 4,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1, 2, 3],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const first = database.db
+      .prepare(
+        `SELECT source_policy_set_id
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "nested-compaction-first") as { source_policy_set_id: string };
+    const second = database.db
+      .prepare(
+        `SELECT source_policy_set_id
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "nested-compaction-second") as { source_policy_set_id: string };
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_policy_set_ids_json
+             FROM memory_policy_set_metadata
+            WHERE policy_set_id = ?`,
+        )
+        .get(second.source_policy_set_id),
+    ).toEqual({
+      source_policy_set_ids_json: JSON.stringify(
+        [
+          first.source_policy_set_id,
+          createEffectiveMemoryPolicySetId({
+            memoryPolicyRevision: "policy-revision-1",
+            memberPolicySetIds: ["source-policy-1"],
+          }),
+        ].toSorted(),
+      ),
+    });
   });
 
   it("preserves a copied event's origin policy lineage without reauthorizing it", async () => {

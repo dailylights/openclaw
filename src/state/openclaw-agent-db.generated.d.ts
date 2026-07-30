@@ -167,6 +167,16 @@ export interface MemoryCompactionPolicies {
   source_policy_set_id: string;
 }
 
+export interface MemoryCompactionPolicyBindings {
+  authorization_status: string;
+  compaction_id: string;
+  created_at: number;
+  policy_set_revision: string;
+  session_id: string;
+  source_event_seqs_json: string;
+  source_policy_set_id: string;
+}
+
 export interface MemoryEgressReceipts {
   allowed_audiences_json: string;
   context_fingerprint: string;
@@ -843,6 +853,7 @@ export interface DB {
   heartbeat_outcomes: HeartbeatOutcomes;
   memory_audit_outbox: MemoryAuditOutbox;
   memory_compaction_policies: MemoryCompactionPolicies;
+  memory_compaction_policy_bindings: MemoryCompactionPolicyBindings;
   memory_egress_receipts: MemoryEgressReceipts;
   memory_embedding_cache: MemoryEmbeddingCache;
   memory_exposure_receipts: MemoryExposureReceipts;

@@ -1200,6 +1200,24 @@ CREATE TABLE IF NOT EXISTS memory_compaction_policies (
 CREATE INDEX IF NOT EXISTS idx_memory_compaction_policies_session
   ON memory_compaction_policies(session_id, authorization_status, created_at);
 
+-- Compaction event IDs are only unique inside a transcript. Keep the derived
+-- policy binding session-scoped so a fork cannot accidentally reuse a parent
+-- session's authorization record.
+CREATE TABLE IF NOT EXISTS memory_compaction_policy_bindings (
+  session_id TEXT NOT NULL,
+  compaction_id TEXT NOT NULL,
+  source_policy_set_id TEXT NOT NULL,
+  policy_set_revision TEXT NOT NULL,
+  source_event_seqs_json TEXT NOT NULL,
+  authorization_status TEXT NOT NULL CHECK (authorization_status IN ('authorized', 'pending')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, compaction_id),
+  FOREIGN KEY (source_policy_set_id) REFERENCES memory_policy_sets(policy_set_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_compaction_policy_bindings_session
+  ON memory_compaction_policy_bindings(session_id, authorization_status, created_at);
+
 -- Archive rows outlive their source transcript rows. Keep the exact policy
 -- companion in SQLite so a cold artifact is never the only authority record.
 CREATE TABLE IF NOT EXISTS transcript_memory_archives (

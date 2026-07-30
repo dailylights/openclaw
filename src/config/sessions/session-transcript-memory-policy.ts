@@ -5,12 +5,14 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
+import type { AudienceRef } from "../../memory-host-sdk/host/authorization.js";
 import type { TranscriptMemoryRunExposureSnapshot } from "../../plugins/memory-invocation-receipts.js";
 import {
   canonicalMemoryAudiencesJson,
   canonicalMemoryStringArrayJson,
   createEffectiveMemoryPolicySetId,
   equalMemoryAudiences,
+  hashMemoryRevision,
   parseCanonicalMemoryAudiences,
   parseCanonicalMemoryStringArray,
 } from "../../plugins/memory-invocation-serialization.js";
@@ -35,6 +37,7 @@ type TranscriptMemoryPolicyDatabase = Pick<
   OpenClawAgentDatabaseSchema,
   | "memory_migrations"
   | "memory_compaction_policies"
+  | "memory_compaction_policy_bindings"
   | "memory_policies"
   | "memory_policy_revisions"
   | "memory_policy_set_metadata"
@@ -574,6 +577,278 @@ function isAuthorizedTranscriptPolicyBinding(params: {
   );
 }
 
+type StoredPolicySetFacts = Readonly<{
+  policySet: MemoryPolicySets;
+  metadata: MemoryPolicySetMetadata;
+  requirements: readonly MemoryPolicySetRequirements[];
+  sourcePolicySetIds: readonly string[];
+  audiences: readonly AudienceRef[];
+}>;
+
+type DerivedCompactionPolicySet = Readonly<{
+  policySetId: string;
+  policySetRevision: string;
+  memoryPolicyRevision: string;
+  sourcePolicySetIds: readonly string[];
+  audiences: readonly AudienceRef[];
+  requirements: readonly MemoryPolicySetRequirements[];
+}>;
+
+function memoryAudienceKey(audience: AudienceRef): string {
+  return `${audience.kind}\0${audience.id}`;
+}
+
+function sameMemoryStringArrays(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function samePolicySetRequirements(
+  left: readonly MemoryPolicySetRequirements[],
+  right: readonly MemoryPolicySetRequirements[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((requirement, index) => {
+      const candidate = right[index];
+      return (
+        candidate !== undefined &&
+        requirement.stable_policy_id === candidate.stable_policy_id &&
+        requirement.captured_revision_id === candidate.captured_revision_id &&
+        requirement.expected_active_revision_id === candidate.expected_active_revision_id &&
+        requirement.expected_revocation_epoch === candidate.expected_revocation_epoch
+      );
+    })
+  );
+}
+
+function sortedPolicySetRequirements(
+  requirements: readonly MemoryPolicySetRequirements[],
+): MemoryPolicySetRequirements[] {
+  return [...requirements].toSorted((left, right) =>
+    left.stable_policy_id.localeCompare(right.stable_policy_id),
+  );
+}
+
+function readStoredPolicySetFacts(
+  db: DatabaseSync,
+  policySetId: string,
+): StoredPolicySetFacts | undefined {
+  const kysely = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(db);
+  const policySet = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely.selectFrom("memory_policy_sets").selectAll().where("policy_set_id", "=", policySetId),
+  );
+  const metadata = policySet
+    ? executeSqliteQueryTakeFirstSync(
+        db,
+        kysely
+          .selectFrom("memory_policy_set_metadata")
+          .selectAll()
+          .where("policy_set_id", "=", policySetId),
+      )
+    : undefined;
+  const requirements = policySet
+    ? sortedPolicySetRequirements(
+        executeSqliteQuerySync(
+          db,
+          kysely
+            .selectFrom("memory_policy_set_requirements")
+            .selectAll()
+            .where("policy_set_id", "=", policySetId),
+        ).rows,
+      )
+    : [];
+  if (!policySet || !metadata || metadata.retention_state !== "active") {
+    return undefined;
+  }
+  const sourcePolicySetIds = parseCanonicalMemoryStringArray(metadata.source_policy_set_ids_json);
+  const policySetMembers = parseCanonicalMemoryStringArray(policySet.member_policy_set_ids_json);
+  const audiences = parseCanonicalMemoryAudiences(metadata.normalized_audience_intersection_json);
+  if (
+    !sourcePolicySetIds ||
+    !policySetMembers ||
+    !audiences?.length ||
+    !metadata.policy_set_revision.trim() ||
+    !sameMemoryStringArrays(sourcePolicySetIds, policySetMembers) ||
+    createEffectiveMemoryPolicySetId({
+      memoryPolicyRevision: policySet.memory_policy_revision,
+      memberPolicySetIds: sourcePolicySetIds,
+    }) !== policySet.policy_set_id ||
+    requirements.length === 0 ||
+    new Set(requirements.map((requirement) => requirement.stable_policy_id)).size !==
+      requirements.length
+  ) {
+    return undefined;
+  }
+  return { policySet, metadata, requirements, sourcePolicySetIds, audiences };
+}
+
+function mergeCompactionPolicyRequirements(
+  sources: readonly StoredPolicySetFacts[],
+): MemoryPolicySetRequirements[] | undefined {
+  const merged = new Map<string, MemoryPolicySetRequirements>();
+  for (const source of sources) {
+    for (const requirement of source.requirements) {
+      const existing = merged.get(requirement.stable_policy_id);
+      if (
+        existing &&
+        (existing.captured_revision_id !== requirement.captured_revision_id ||
+          existing.expected_active_revision_id !== requirement.expected_active_revision_id ||
+          existing.expected_revocation_epoch !== requirement.expected_revocation_epoch)
+      ) {
+        return undefined;
+      }
+      merged.set(requirement.stable_policy_id, requirement);
+    }
+  }
+  const requirements = sortedPolicySetRequirements([...merged.values()]);
+  return requirements.length > 0 ? requirements : undefined;
+}
+
+function intersectCompactionAudiences(
+  sources: readonly StoredPolicySetFacts[],
+): AudienceRef[] | undefined {
+  const first = sources[0]?.audiences;
+  if (!first) {
+    return undefined;
+  }
+  const intersection = first.filter((audience) =>
+    sources.every((source) =>
+      source.audiences.some(
+        (candidate) => memoryAudienceKey(candidate) === memoryAudienceKey(audience),
+      ),
+    ),
+  );
+  return intersection.length > 0 ? intersection : undefined;
+}
+
+function createDerivedCompactionPolicySet(params: {
+  agentId: string;
+  compactionId: string;
+  eventSeq: number;
+  sessionId: string;
+  sources: readonly StoredPolicySetFacts[];
+}): DerivedCompactionPolicySet | undefined {
+  if (
+    !params.agentId.trim() ||
+    !params.compactionId.trim() ||
+    !params.sessionId.trim() ||
+    !Number.isSafeInteger(params.eventSeq) ||
+    params.eventSeq < 0 ||
+    params.sources.length === 0 ||
+    params.sources.some((source) => source.policySet.agent_id !== params.agentId)
+  ) {
+    return undefined;
+  }
+  const sourcePolicySetIds = [
+    ...new Set(params.sources.map((source) => source.policySet.policy_set_id)),
+  ].toSorted();
+  const audiences = intersectCompactionAudiences(params.sources);
+  const requirements = mergeCompactionPolicyRequirements(params.sources);
+  if (!audiences || !requirements) {
+    return undefined;
+  }
+  const requirementSnapshot = requirements.map((requirement) => ({
+    stablePolicyId: requirement.stable_policy_id,
+    capturedRevisionId: requirement.captured_revision_id,
+    expectedActiveRevisionId: requirement.expected_active_revision_id,
+    expectedRevocationEpoch: requirement.expected_revocation_epoch,
+  }));
+  const memoryPolicyRevision = hashMemoryRevision("mpsr2", {
+    agentId: params.agentId,
+    compactionId: params.compactionId,
+    eventSeq: params.eventSeq,
+    sessionId: params.sessionId,
+    sourcePolicySetIds,
+    audiences,
+    requirements: requirementSnapshot,
+  });
+  const policySetId = createEffectiveMemoryPolicySetId({
+    memoryPolicyRevision,
+    memberPolicySetIds: sourcePolicySetIds,
+  });
+  const policySetRevision = hashMemoryRevision("mpsetrev2", {
+    policySetId,
+    memoryPolicyRevision,
+    sourcePolicySetIds,
+    audiences,
+    requirements: requirementSnapshot,
+  });
+  return {
+    policySetId,
+    policySetRevision,
+    memoryPolicyRevision,
+    sourcePolicySetIds,
+    audiences,
+    requirements,
+  };
+}
+
+function persistDerivedCompactionPolicySetInTransaction(params: {
+  db: DatabaseSync;
+  agentId: string;
+  createdAt: number;
+  policy: DerivedCompactionPolicySet;
+}): boolean {
+  const kysely = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.db);
+  const sourcePolicySetIdsJson = canonicalMemoryStringArrayJson(params.policy.sourcePolicySetIds);
+  const audiencesJson = canonicalMemoryAudiencesJson(params.policy.audiences);
+  executeSqliteQuerySync(
+    params.db,
+    kysely
+      .insertInto("memory_policy_sets")
+      .values({
+        policy_set_id: params.policy.policySetId,
+        agent_id: params.agentId,
+        memory_policy_revision: params.policy.memoryPolicyRevision,
+        member_policy_set_ids_json: sourcePolicySetIdsJson,
+        created_at: params.createdAt,
+      })
+      .onConflict((conflict) => conflict.column("policy_set_id").doNothing()),
+  );
+  executeSqliteQuerySync(
+    params.db,
+    kysely
+      .insertInto("memory_policy_set_metadata")
+      .values({
+        policy_set_id: params.policy.policySetId,
+        policy_set_revision: params.policy.policySetRevision,
+        source_policy_set_ids_json: sourcePolicySetIdsJson,
+        normalized_audience_intersection_json: audiencesJson,
+        retention_state: "active",
+        created_at: params.createdAt,
+      })
+      .onConflict((conflict) => conflict.column("policy_set_id").doNothing()),
+  );
+  for (const requirement of params.policy.requirements) {
+    executeSqliteQuerySync(
+      params.db,
+      kysely
+        .insertInto("memory_policy_set_requirements")
+        .values({
+          policy_set_id: params.policy.policySetId,
+          stable_policy_id: requirement.stable_policy_id,
+          captured_revision_id: requirement.captured_revision_id,
+          expected_active_revision_id: requirement.expected_active_revision_id,
+          expected_revocation_epoch: requirement.expected_revocation_epoch,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["policy_set_id", "stable_policy_id"]).doNothing(),
+        ),
+    );
+  }
+  const persisted = readStoredPolicySetFacts(params.db, params.policy.policySetId);
+  return Boolean(
+    persisted &&
+    persisted.policySet.agent_id === params.agentId &&
+    persisted.policySet.memory_policy_revision === params.policy.memoryPolicyRevision &&
+    persisted.metadata.policy_set_revision === params.policy.policySetRevision &&
+    sameMemoryStringArrays(persisted.sourcePolicySetIds, params.policy.sourcePolicySetIds) &&
+    equalMemoryAudiences(persisted.audiences, params.policy.audiences) &&
+    samePolicySetRequirements(persisted.requirements, params.policy.requirements),
+  );
+}
+
 function isStoredTranscriptEventAuthorized(
   db: DatabaseSync,
   sessionId: string,
@@ -676,39 +951,15 @@ function isStoredTranscriptEventAuthorized(
   if (!compaction) {
     return true;
   }
-  const compactionPolicy = executeSqliteQueryTakeFirstSync(
+  return isStoredCompactionPolicyAuthorized({
     db,
-    kysely
-      .selectFrom("memory_compaction_policies")
-      .selectAll()
-      .where("compaction_id", "=", compaction.id),
-  );
-  if (
-    !detail ||
-    !compactionPolicy ||
-    compactionPolicy.session_id !== sessionId ||
-    compactionPolicy.authorization_status !== "authorized" ||
-    compactionPolicy.source_policy_set_id !== row.source_policy_set_id ||
-    compactionPolicy.policy_set_revision !== detail.policy_set_revision
-  ) {
-    return false;
-  }
-  const sourceEventSeqs = parseCanonicalMemoryStringArray(
-    compactionPolicy.source_event_seqs_json,
-  )?.map((value) => Number(value));
-  if (
-    !sourceEventSeqs ||
-    sourceEventSeqs.length === 0 ||
-    sourceEventSeqs.some(
-      (sourceEventSeq) =>
-        !Number.isSafeInteger(sourceEventSeq) || sourceEventSeq < 0 || sourceEventSeq >= eventSeq,
-    )
-  ) {
-    return false;
-  }
-  return sourceEventSeqs.every((sourceEventSeq) =>
-    isStoredTranscriptEventAuthorized(db, sessionId, sourceEventSeq),
-  );
+    compactionId: compaction.id,
+    detail,
+    eventSeq,
+    policySet,
+    row,
+    sessionId,
+  });
 }
 
 function readTranscriptCompactionIdentity(
@@ -737,6 +988,138 @@ function readTranscriptCompactionIdentity(
   } catch {
     return undefined;
   }
+}
+
+function readEffectiveTranscriptEventPolicySetId(
+  db: DatabaseSync,
+  sessionId: string,
+  eventSeq: number,
+): string | undefined {
+  const kysely = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(db);
+  const policy = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("transcript_event_memory_policies")
+      .select("source_policy_set_id")
+      .where("session_id", "=", sessionId)
+      .where("event_seq", "=", eventSeq),
+  );
+  if (!policy?.source_policy_set_id) {
+    return undefined;
+  }
+  const compaction = readTranscriptCompactionIdentity(db, sessionId, eventSeq);
+  if (!compaction) {
+    return policy.source_policy_set_id;
+  }
+  const binding = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("memory_compaction_policy_bindings")
+      .select(["authorization_status", "source_policy_set_id"])
+      .where("session_id", "=", sessionId)
+      .where("compaction_id", "=", compaction.id),
+  );
+  return binding?.authorization_status === "authorized" ? binding.source_policy_set_id : undefined;
+}
+
+function isStoredCompactionPolicyAuthorized(params: {
+  db: DatabaseSync;
+  compactionId: string;
+  detail: TranscriptEventMemoryPolicyDetails;
+  eventSeq: number;
+  policySet: MemoryPolicySets;
+  row: TranscriptEventMemoryPolicies;
+  sessionId: string;
+}): boolean {
+  const { db } = params;
+  const kysely = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(db);
+  const binding = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("memory_compaction_policy_bindings")
+      .selectAll()
+      .where("session_id", "=", params.sessionId)
+      .where("compaction_id", "=", params.compactionId),
+  );
+  if (
+    !binding ||
+    binding.authorization_status !== "authorized" ||
+    !params.row.source_policy_set_id ||
+    !params.row.delivery_audiences_json
+  ) {
+    return false;
+  }
+  const sourceEventSeqs = parseCanonicalMemoryStringArray(binding.source_event_seqs_json)?.map(
+    (value) => Number(value),
+  );
+  if (
+    !sourceEventSeqs ||
+    sourceEventSeqs.length === 0 ||
+    sourceEventSeqs.some(
+      (sourceEventSeq) =>
+        !Number.isSafeInteger(sourceEventSeq) ||
+        sourceEventSeq < 0 ||
+        sourceEventSeq >= params.eventSeq,
+    )
+  ) {
+    return false;
+  }
+  const sourcePolicySetIds = [params.row.source_policy_set_id];
+  for (const sourceEventSeq of sourceEventSeqs) {
+    if (!isStoredTranscriptEventAuthorized(db, params.sessionId, sourceEventSeq)) {
+      return false;
+    }
+    const sourcePolicySetId = readEffectiveTranscriptEventPolicySetId(
+      db,
+      params.sessionId,
+      sourceEventSeq,
+    );
+    if (!sourcePolicySetId) {
+      return false;
+    }
+    sourcePolicySetIds.push(sourcePolicySetId);
+  }
+  const sourceFacts = sourcePolicySetIds.map((policySetId) =>
+    readStoredPolicySetFacts(db, policySetId),
+  );
+  if (!sourceFacts.every((source): source is StoredPolicySetFacts => source !== undefined)) {
+    return false;
+  }
+  const derived = createDerivedCompactionPolicySet({
+    agentId: params.policySet.agent_id,
+    compactionId: params.compactionId,
+    eventSeq: params.eventSeq,
+    sessionId: params.sessionId,
+    sources: sourceFacts,
+  });
+  const deliveryAudiences = parseCanonicalMemoryAudiences(params.row.delivery_audiences_json);
+  const persisted = derived
+    ? readStoredPolicySetFacts(db, binding.source_policy_set_id)
+    : undefined;
+  return Boolean(
+    derived &&
+    persisted &&
+    binding.source_policy_set_id === derived.policySetId &&
+    binding.policy_set_revision === derived.policySetRevision &&
+    persisted.policySet.agent_id === params.policySet.agent_id &&
+    persisted.policySet.memory_policy_revision === derived.memoryPolicyRevision &&
+    persisted.metadata.policy_set_revision === derived.policySetRevision &&
+    sameMemoryStringArrays(persisted.sourcePolicySetIds, derived.sourcePolicySetIds) &&
+    equalMemoryAudiences(persisted.audiences, derived.audiences) &&
+    samePolicySetRequirements(persisted.requirements, derived.requirements) &&
+    hasCurrentPolicyRequirements({
+      db,
+      agentId: params.policySet.agent_id,
+      requirements: persisted.requirements,
+    }) &&
+    deliveryAudiences?.length &&
+    deliveryAudiences.every((audience) =>
+      persisted.audiences.some(
+        (candidate) => memoryAudienceKey(candidate) === memoryAudienceKey(audience),
+      ),
+    ) &&
+    params.detail.policy_set_revision.trim(),
+  );
 }
 
 export type PreservedTranscriptMemoryPolicy = {
@@ -1372,46 +1755,96 @@ export function recordTranscriptCompactionPolicyInTransaction(params: {
       .where("session_id", "=", params.sessionId)
       .where("event_seq", "=", params.eventSeq),
   );
-  const detail = executeSqliteQueryTakeFirstSync(
+  const outputPolicy = policy?.source_policy_set_id
+    ? readStoredPolicySetFacts(params.database.db, policy.source_policy_set_id)
+    : undefined;
+  if (!policy?.source_policy_set_id || !outputPolicy) {
+    return false;
+  }
+  const sourcePolicySetIds = [policy.source_policy_set_id];
+  for (const sourceEventSeq of sourceEventSeqs) {
+    const sourcePolicySetId = readEffectiveTranscriptEventPolicySetId(
+      params.database.db,
+      params.sessionId,
+      sourceEventSeq,
+    );
+    if (!sourcePolicySetId) {
+      return false;
+    }
+    sourcePolicySetIds.push(sourcePolicySetId);
+  }
+  const sourceFacts = sourcePolicySetIds.map((policySetId) =>
+    readStoredPolicySetFacts(params.database.db, policySetId),
+  );
+  if (!sourceFacts.every((source): source is StoredPolicySetFacts => source !== undefined)) {
+    return false;
+  }
+  const derived = createDerivedCompactionPolicySet({
+    agentId: outputPolicy.policySet.agent_id,
+    compactionId,
+    eventSeq: params.eventSeq,
+    sessionId: params.sessionId,
+    sources: sourceFacts,
+  });
+  const outputAudiences = executeSqliteQueryTakeFirstSync(
     params.database.db,
     db
-      .selectFrom("transcript_event_memory_policy_details")
-      .select(["policy_set_revision"])
+      .selectFrom("transcript_event_memory_policies")
+      .select("delivery_audiences_json")
       .where("session_id", "=", params.sessionId)
       .where("event_seq", "=", params.eventSeq),
-  );
-  if (!policy?.source_policy_set_id || !detail) {
+  )?.delivery_audiences_json;
+  const deliveryAudiences =
+    typeof outputAudiences === "string"
+      ? parseCanonicalMemoryAudiences(outputAudiences)
+      : undefined;
+  if (
+    !derived ||
+    !deliveryAudiences?.length ||
+    !deliveryAudiences.every((audience) =>
+      derived.audiences.some(
+        (candidate) => memoryAudienceKey(candidate) === memoryAudienceKey(audience),
+      ),
+    ) ||
+    !persistDerivedCompactionPolicySetInTransaction({
+      db: params.database.db,
+      agentId: outputPolicy.policySet.agent_id,
+      createdAt: Date.now(),
+      policy: derived,
+    })
+  ) {
     return false;
   }
   const sourceEventSeqsJson = canonicalMemoryStringArrayJson(sourceEventSeqs.map(String));
   executeSqliteQuerySync(
     params.database.db,
     db
-      .insertInto("memory_compaction_policies")
+      .insertInto("memory_compaction_policy_bindings")
       .values({
         authorization_status: "authorized",
         compaction_id: compactionId,
         created_at: Date.now(),
-        policy_set_revision: detail.policy_set_revision,
+        policy_set_revision: derived.policySetRevision,
         session_id: params.sessionId,
         source_event_seqs_json: sourceEventSeqsJson,
-        source_policy_set_id: policy.source_policy_set_id,
+        source_policy_set_id: derived.policySetId,
       })
-      .onConflict((conflict) => conflict.column("compaction_id").doNothing()),
+      .onConflict((conflict) => conflict.columns(["session_id", "compaction_id"]).doNothing()),
   );
   const persisted = executeSqliteQueryTakeFirstSync(
     params.database.db,
     db
-      .selectFrom("memory_compaction_policies")
+      .selectFrom("memory_compaction_policy_bindings")
       .selectAll()
+      .where("session_id", "=", params.sessionId)
       .where("compaction_id", "=", compactionId),
   );
   return Boolean(
     persisted &&
     persisted.session_id === params.sessionId &&
     persisted.authorization_status === "authorized" &&
-    persisted.source_policy_set_id === policy.source_policy_set_id &&
-    persisted.policy_set_revision === detail.policy_set_revision &&
+    persisted.source_policy_set_id === derived.policySetId &&
+    persisted.policy_set_revision === derived.policySetRevision &&
     persisted.source_event_seqs_json === sourceEventSeqsJson,
   );
 }
