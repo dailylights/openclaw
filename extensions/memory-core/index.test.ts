@@ -1,10 +1,10 @@
 // Memory Core tests cover index plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi, OpenClawPluginCommandDefinition } from "openclaw/plugin-sdk/core";
-import { LEGACY_MEMORY_AUTHORIZATION_CAPABILITIES } from "openclaw/plugin-sdk/memory-authorization";
 import type { MemoryPluginRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MEMORY_CORE_AUTHORIZATION_CAPABILITIES } from "./src/authorization.js";
 import { buildMemoryFlushPlan } from "./src/flush-plan.js";
 import type { MemoryCoreRuntimeHost } from "./src/memory/runtime-host.js";
 import { buildPromptSection } from "./src/prompt-section.js";
@@ -216,10 +216,14 @@ describe("memory-core plugin runtime registration", () => {
     expect(closeMemorySearchManagerMock).toHaveBeenCalledWith({ cfg, agentId: "main" });
   });
 
-  it("declares the lazy context-free runtime as legacy-only", () => {
-    expect(registerMemoryCoreRuntime().authorization).toEqual(
-      LEGACY_MEMORY_AUTHORIZATION_CAPABILITIES,
-    );
+  it("declares the lazy Phase 1B authorized read runtime", () => {
+    const runtime = registerMemoryCoreRuntime();
+
+    expect(runtime.authorization).toEqual(MEMORY_CORE_AUTHORIZATION_CAPABILITIES);
+    expect(runtime.authorizationConformance).toBeDefined();
+    expect(runtime.authorize).toEqual(expect.any(Function));
+    expect(runtime.searchAuthorized).toEqual(expect.any(Function));
+    expect(runtime.readAuthorized).toEqual(expect.any(Function));
   });
 
   it("binds the host local-service hook to the registered memory runtime", async () => {

@@ -27,6 +27,12 @@ import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-age
 import { ensureSessionEntryValidityProjection } from "./openclaw-agent-db-session-migrations.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
+  AGENT_SCOPED_MEMORY_FTS_SHADOW_TABLES,
+  AGENT_SCOPED_MEMORY_FTS_TABLE,
+  AGENT_SCOPED_MEMORY_FTS_TRIGGER_DEFINITIONS,
+  AGENT_SCOPED_MEMORY_TABLES,
+} from "./openclaw-agent-scoped-memory-schema.js";
+import {
   AGENT_V14_ADDITIVE_SCHEMA_SQL,
   AGENT_V14_CORE_SCHEMA_SQL,
   AGENT_V14_SESSION_SHARING_SCHEMA_SQL,
@@ -45,6 +51,9 @@ type ExistingAgentSchemaMeta = {
 
 const AGENT_SCHEMA_COMPATIBILITY = {
   allowedMissingTables: [
+    ...AGENT_SCOPED_MEMORY_TABLES,
+    AGENT_SCOPED_MEMORY_FTS_TABLE,
+    ...AGENT_SCOPED_MEMORY_FTS_SHADOW_TABLES,
     MEMORY_INDEX_CHUNK_PROVENANCE_TABLE,
     MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE,
     CONTEXT_ENGINE_TURN_OUTBOX_TABLE,
@@ -62,6 +71,11 @@ const AGENT_SCHEMA_COMPATIBILITY = {
     {
       tableName: MEMORY_INDEX_SOURCES_TABLE,
       triggers: MEMORY_PATH_FTS_TRIGGER_DEFINITIONS,
+    },
+    {
+      optionalWhenTableMissing: AGENT_SCOPED_MEMORY_FTS_TABLE,
+      tableName: "memory_scoped_chunks",
+      triggers: AGENT_SCOPED_MEMORY_FTS_TRIGGER_DEFINITIONS,
     },
   ],
 } satisfies SqliteSchemaCompatibility;

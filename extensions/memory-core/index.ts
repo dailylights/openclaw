@@ -18,7 +18,10 @@ import type {
   PluginStateLeaseRunner,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { TSchema } from "typebox";
-import { MEMORY_CORE_AUTHORIZATION_CAPABILITIES } from "./src/authorization.js";
+import {
+  builtinScopedMemoryConformanceAdapter,
+  MEMORY_CORE_AUTHORIZATION_CAPABILITIES,
+} from "./src/authorization.js";
 import { configureMemoryCoreDreamingState } from "./src/dreaming-state.js";
 import { registerShortTermPromotionDreaming } from "./src/dreaming.js";
 import { buildMemoryFlushPlan } from "./src/flush-plan.js";
@@ -246,11 +249,30 @@ function resolveMemoryToolOptions(
 }
 
 function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRuntime {
+  let runtimePromise: Promise<MemoryPluginRuntime> | undefined;
+  const loadRuntime = async (): Promise<MemoryPluginRuntime> => {
+    runtimePromise ??= loadRuntimeProviderModule().then((module) =>
+      module.createMemoryRuntime(host),
+    );
+    return await runtimePromise;
+  };
   return {
     authorization: MEMORY_CORE_AUTHORIZATION_CAPABILITIES,
+    authorizationConformance: builtinScopedMemoryConformanceAdapter,
+    async authorize(context) {
+      const runtime = await loadRuntime();
+      return await runtime.authorize!(context);
+    },
+    async searchAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.searchAuthorized!(params);
+    },
+    async readAuthorized(params) {
+      const runtime = await loadRuntime();
+      return await runtime.readAuthorized!(params);
+    },
     async getMemorySearchManager(params) {
-      const { createMemoryRuntime } = await loadRuntimeProviderModule();
-      return await createMemoryRuntime(host).getMemorySearchManager(params);
+      return await (await loadRuntime()).getMemorySearchManager(params);
     },
     async authorizeSearchHits(params) {
       const { createMemoryRuntime } = await loadRuntimeProviderModule();

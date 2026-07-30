@@ -1,6 +1,7 @@
 /** Covers non-activating memory registry handles and requesting-agent workspace ownership. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemorySearchResult } from "../memory-host-sdk/host/types.js";
+import type { MemoryAccessContextFacts } from "./memory-access-context.js";
 import type { MemoryPluginRuntime } from "./registry-contribution-types.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
@@ -35,6 +36,7 @@ vi.mock("./memory-state.js", async (importOriginal) => {
 });
 
 import {
+  authorizeActiveMemoryAccess,
   authorizeActiveMemorySearchHits,
   closeActiveMemorySearchManager,
   closeActiveMemorySearchManagers,
@@ -43,6 +45,64 @@ import {
 } from "./memory-runtime.js";
 import { resetStandaloneMemoryRegistrySlot } from "./memory-runtime.test-support.js";
 import { hasMemoryRuntime } from "./memory-state.js";
+
+async function createTrustedReadContext() {
+  const { createMemoryAccessContextFactory } = await import("./memory-access-context.js");
+  const identity = {
+    sessionId: "session-1",
+    sessionIdentityRevision: "session-revision-1",
+    subjectRevision: "subject-revision-1",
+    subject: {
+      version: 1 as const,
+      kind: "user" as const,
+      principalId: "principal-owner",
+      creationEvidence: {
+        kind: "gateway-profile" as const,
+        revision: "creation-revision-1",
+      },
+    },
+  };
+  const create = createMemoryAccessContextFactory({
+    readCurrentSessionIdentity: async () => identity,
+    now: () => Date.parse("2026-07-29T12:00:00.000Z"),
+  });
+  return await create({
+    contextId: "context-1",
+    requestId: "request-1",
+    runId: "run-1",
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    sessionId: identity.sessionId,
+    sessionIdentityRevision: identity.sessionIdentityRevision,
+    subjectRevision: identity.subjectRevision,
+    subject: identity.subject,
+    actor: {
+      kind: "principal",
+      actorKind: "human",
+      principalId: "principal-owner",
+      assurance: "gateway-profile",
+      evidenceRevision: "actor-revision-1",
+    },
+    verifiedPrincipals: [
+      {
+        principalId: "principal-owner",
+        assurance: "gateway-profile",
+        evidenceRevision: "principal-revision-1",
+      },
+    ],
+    delivery: {
+      sinkKind: "private",
+      audiences: [{ kind: "user", id: "principal-owner" }],
+      egressCapabilityIds: ["reply.final"],
+      egressRegistryRevision: "egress-revision-1",
+      deliveryRevision: "delivery-revision-1",
+    },
+    collaboration: { kind: "not-applicable" },
+    verifiedMemberships: [],
+    operation: "read",
+    hostFactsRevision: "host-facts-revision-1",
+  } satisfies MemoryAccessContextFacts);
+}
 
 function createRuntime() {
   return {
@@ -244,6 +304,27 @@ describe("memory runtime handles", () => {
     expect(mocks.loadPluginRegistryHandle).not.toHaveBeenCalled();
     expect(mocks.emitMemoryAuthorizationShadowSurfaceInspection).toHaveBeenCalledOnce();
     expect(mocks.emitMemoryAuthorizationShadowSurfaceInspection).toHaveBeenCalledWith(runtime);
+  });
+
+  it("fails closed for QMD authorization without acquiring the legacy manager", async () => {
+    const getMemorySearchManager = vi.fn(async () => ({ manager: null, error: "legacy path" }));
+    const runtime = {
+      getMemorySearchManager,
+      resolveMemoryBackendConfig: vi.fn(() => ({ backend: "qmd" as const })),
+    } satisfies MemoryPluginRuntime;
+    mocks.getMemoryRuntime.mockReturnValue(runtime);
+
+    await expect(
+      authorizeActiveMemoryAccess({
+        cfg: {} as never,
+        context: await createTrustedReadContext(),
+      }),
+    ).resolves.toEqual({
+      runtime: null,
+      plan: null,
+      error: "authorized memory backend unavailable",
+    });
+    expect(getMemorySearchManager).not.toHaveBeenCalled();
   });
 
   it("authorizes raw hits inside the selected plugin runtime scope", async () => {

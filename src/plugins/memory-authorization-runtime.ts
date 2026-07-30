@@ -1,4 +1,8 @@
 import {
+  runMemoryAuthorizationConformanceSuite,
+  type MemoryAuthorizationConformanceAdapter,
+} from "../memory-host-sdk/host/authorization-conformance.js";
+import {
   MEMORY_AUTHORIZATION_CAPABILITY_NAMES,
   MEMORY_AUTHORIZATION_CONTRACT_VERSION,
   hasCompleteMemoryAuthorizationCapabilities,
@@ -19,6 +23,32 @@ const AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES = [
 ] as const satisfies readonly (keyof AuthorizedMemoryRuntime)[];
 
 type AuthorizedMemoryRuntimeMethodName = (typeof AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES)[number];
+
+const AUTHORIZED_MEMORY_READ_CAPABILITIES = [
+  "scopedCandidates",
+  "exactReadByAuthorizedHandle",
+  "exposureReceipts",
+  "egressReceipts",
+] as const satisfies readonly MemoryAuthorizationCapabilityName[];
+
+type AdmittedAuthorizedMemoryReadRuntime = Readonly<
+  Pick<
+    AuthorizedMemoryRuntime,
+    "authorization" | "authorize" | "searchAuthorized" | "readAuthorized"
+  >
+>;
+
+type MemoryAuthorizationRuntimeAdmission =
+  | Readonly<{
+      ok: true;
+      runtime: AdmittedAuthorizedMemoryReadRuntime;
+    }>
+  | Readonly<{
+      ok: false;
+      reasonCode: "backend-nonconforming";
+    }>;
+
+const readAdmissionCache = new WeakMap<object, Promise<MemoryAuthorizationRuntimeAdmission>>();
 
 type MemoryAuthorizationRuntimeInspection = Readonly<{
   version: 1;
@@ -78,4 +108,64 @@ export function inspectMemoryAuthorizationRuntime(
     surfaceComplete,
     reasonCode: surfaceComplete ? "surface-complete" : "backend-nonconforming",
   });
+}
+
+function isConformanceAdapter(value: unknown): value is MemoryAuthorizationConformanceAdapter {
+  return (
+    isRecord(value) && typeof value.evaluate === "function" && typeof value.prefilter === "function"
+  );
+}
+
+/**
+ * Admit only the Phase 1B authorized read surface. Capability flags remain truthful: later write,
+ * sync, import, export, and status phases are not required or inferred here.
+ */
+export async function admitMemoryAuthorizationReadRuntime(
+  runtime: unknown,
+): Promise<MemoryAuthorizationRuntimeAdmission> {
+  if (!isRecord(runtime)) {
+    return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+  }
+  const cached = readAdmissionCache.get(runtime);
+  if (cached) {
+    return await cached;
+  }
+  const admission = (async (): Promise<MemoryAuthorizationRuntimeAdmission> => {
+    const authorization = runtime.authorization;
+    const authorizationConformance = runtime.authorizationConformance;
+    const authorize = runtime.authorize;
+    const searchAuthorized = runtime.searchAuthorized;
+    const readAuthorized = runtime.readAuthorized;
+    if (
+      !isMemoryAuthorizationCapabilities(authorization) ||
+      AUTHORIZED_MEMORY_READ_CAPABILITIES.some((capability) => !authorization[capability]) ||
+      typeof authorize !== "function" ||
+      typeof searchAuthorized !== "function" ||
+      typeof readAuthorized !== "function" ||
+      !isConformanceAdapter(authorizationConformance)
+    ) {
+      return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+    }
+    let report;
+    try {
+      report = await runMemoryAuthorizationConformanceSuite(authorizationConformance);
+    } catch {
+      return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+    }
+    if (!report.ok) {
+      return Object.freeze({ ok: false, reasonCode: "backend-nonconforming" });
+    }
+    const admittedAuthorization = Object.freeze({ ...authorization });
+    const admittedRuntime: AdmittedAuthorizedMemoryReadRuntime = Object.freeze({
+      authorization: admittedAuthorization,
+      authorize: (authorize as AuthorizedMemoryRuntime["authorize"]).bind(runtime),
+      searchAuthorized: (searchAuthorized as AuthorizedMemoryRuntime["searchAuthorized"]).bind(
+        runtime,
+      ),
+      readAuthorized: (readAuthorized as AuthorizedMemoryRuntime["readAuthorized"]).bind(runtime),
+    });
+    return Object.freeze({ ok: true, runtime: admittedRuntime });
+  })();
+  readAdmissionCache.set(runtime, admission);
+  return await admission;
 }

@@ -5,6 +5,10 @@ export {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+export {
+  AGENT_SCOPED_MEMORY_SCHEMA_SQL,
+  ensureOpenClawAgentScopedMemorySchema,
+} from "../state/openclaw-agent-scoped-memory-schema.js";
 export { ensureOpenClawAgentStandingIntentsSchema } from "../state/openclaw-agent-standing-intents-schema.js";
 export {
   executeSqliteQuerySync,

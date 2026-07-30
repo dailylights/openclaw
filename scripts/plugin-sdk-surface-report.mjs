@@ -225,7 +225,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: shared channel interactive dispatcher with canonical binding authorization.
       // +1: simple channel secret contract factory replacing repeated collectors.
       // +45: multiplayer-memory authorization shapes, runtime contract, and conformance types.
-      4880,
+      // +1: multiplayer-memory search handles.
+      4881,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(

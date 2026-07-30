@@ -154,7 +154,7 @@ function ensureMemoryIdentitySchema(options: OpenClawStateDatabaseOptions): void
   }
   runOpenClawStateWriteTransaction(
     ({ db }) => {
-      db.exec(MEMORY_IDENTITY_SCHEMA_SQL);
+      db.exec(MEMORY_IDENTITY_SCHEMA_SQL); // sqlite-allow-raw -- Additive canonical DDL only.
     },
     options,
     { operationLabel: "memory-identity.schema.ensure" },

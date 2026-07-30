@@ -248,6 +248,13 @@ export type AuthorizedResourceHandle = DeepReadonly<{
   expiresAt: string;
 }>;
 
+/** Search hit whose exact-read continuation is bound to the current plan and revision. */
+export type AuthorizedMemorySearchResult = DeepReadonly<
+  MemorySearchResult & {
+    resourceHandle: AuthorizedResourceHandle;
+  }
+>;
+
 export type AuthorizedMemoryPlan = DeepReadonly<{
   version: 1;
   planId: string;
@@ -376,7 +383,7 @@ export interface AuthorizedMemoryRuntime {
     sources?: readonly MemorySource[];
     limit: number;
     signal?: AbortSignal;
-  }): Promise<AuthorizedMemoryResultEnvelope<readonly MemorySearchResult[]>>;
+  }): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
   readAuthorized(params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;

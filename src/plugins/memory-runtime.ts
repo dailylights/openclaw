@@ -1,8 +1,15 @@
 // Runtime bridge for plugin-owned memory hooks and state.
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { MemoryAccessContext } from "../memory-host-sdk/host/authorization.js";
 import { resolveUserPath } from "../utils.js";
 import { normalizePluginsConfig } from "./config-state.js";
+import {
+  brandAuthorizedMemoryPlan,
+  isTrustedMemoryAccessContext,
+  MemoryAccessContextError,
+} from "./memory-access-context.js";
+import { admitMemoryAuthorizationReadRuntime } from "./memory-authorization-runtime.js";
 import { emitMemoryAuthorizationShadowSurfaceInspection } from "./memory-authorization-shadow.js";
 import { loadPluginRegistryHandle, resolvePluginRegistryLoadCacheKey } from "./loader.js";
 import {
@@ -171,6 +178,57 @@ export function resolveActiveMemoryBackendConfig(params: { cfg: OpenClawConfig; 
   return owner
     ? withMemoryRuntimeOwner(owner, (runtime) => runtime.resolveMemoryBackendConfig(params))
     : null;
+}
+
+/**
+ * Acquires and authorizes the selected Phase 1B read runtime without touching the legacy manager.
+ * QMD remains unavailable until it supplies its own isolated conformance proof.
+ */
+export async function authorizeActiveMemoryAccess(params: {
+  cfg: OpenClawConfig;
+  context: MemoryAccessContext;
+}) {
+  if (
+    !isTrustedMemoryAccessContext(params.context) ||
+    params.context.agentId !== params.context.agentId.trim()
+  ) {
+    throw new MemoryAccessContextError("invalid-context");
+  }
+  const owner = ensureMemoryRuntime({
+    cfg: params.cfg,
+    agentId: params.context.agentId,
+  });
+  if (!owner) {
+    return {
+      runtime: null,
+      plan: null,
+      error: "authorized memory plugin unavailable",
+    } as const;
+  }
+  return await withMemoryRuntimeOwner(owner, async (runtime) => {
+    const backend = runtime.resolveMemoryBackendConfig({
+      cfg: params.cfg,
+      agentId: params.context.agentId,
+    });
+    if (backend.backend !== "builtin") {
+      return {
+        runtime: null,
+        plan: null,
+        error: "authorized memory backend unavailable",
+      } as const;
+    }
+    const admission = await admitMemoryAuthorizationReadRuntime(runtime);
+    if (!admission.ok) {
+      return {
+        runtime: null,
+        plan: null,
+        error: "authorized memory backend nonconforming",
+      } as const;
+    }
+    const issuedPlan = await admission.runtime.authorize(params.context);
+    const plan = brandAuthorizedMemoryPlan({ context: params.context, plan: issuedPlan });
+    return { runtime: admission.runtime, plan } as const;
+  });
 }
 
 /** Closes all active plugin-backed memory search managers. */

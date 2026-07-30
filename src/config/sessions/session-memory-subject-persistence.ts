@@ -50,7 +50,7 @@ function ensureSessionMemorySubjectSchema(database: OpenClawAgentDatabase): void
     ensuredDatabases.add(database.db);
     return;
   }
-  database.db.exec(AGENT_SESSION_MEMORY_SCHEMA_SQL);
+  database.db.exec(AGENT_SESSION_MEMORY_SCHEMA_SQL); // sqlite-allow-raw -- Additive canonical DDL only.
   // DDL inside a larger session mutation rolls back with that mutation. Mark it
   // only when this call owns an autocommit boundary; the next successful write
   // observes both tables and then caches the committed ensure.

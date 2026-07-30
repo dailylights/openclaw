@@ -3,6 +3,7 @@ import type { EmbeddingInput } from "../../packages/memory-host-sdk/src/engine-e
 import type { MemoryCitationsMode } from "../config/types.memory.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ContextEngine } from "../context-engine/types.js";
+import type { MemoryAuthorizationConformanceAdapter } from "../memory-host-sdk/host/authorization-conformance.js";
 import type {
   AuthorizedMemoryRuntime,
   MemoryAuthorizationCapabilities,
@@ -267,8 +268,10 @@ type MemoryRuntimeBackendConfig =
   | { backend: "qmd"; qmd?: MemoryRuntimeQmdConfig };
 
 export type MemoryPluginRuntime = {
-  /** Additive during shadow rollout; mandatory and complete in enforced mode. */
+  /** Exact implemented capabilities; host admission selects only the required operation family. */
   readonly authorization?: MemoryAuthorizationCapabilities;
+  /** Plugin-owned pure evaluator; the host runs its independent admission suite. */
+  readonly authorizationConformance?: MemoryAuthorizationConformanceAdapter;
   authorize?: AuthorizedMemoryRuntime["authorize"];
   searchAuthorized?: AuthorizedMemoryRuntime["searchAuthorized"];
   readAuthorized?: AuthorizedMemoryRuntime["readAuthorized"];
