@@ -40,7 +40,6 @@ import {
   captureAuthorizedTranscriptMemoryPoliciesInTransaction,
   copyTranscriptMemoryPolicyInTransaction,
   invalidateTranscriptMemoryPolicyInTransaction,
-  readAuthorizedTranscriptEventSeqs,
   recordTranscriptMemoryPolicyInTransaction,
   recordTranscriptCompactionPolicyInTransaction,
   restoreTranscriptMemoryPolicyInTransaction,
@@ -170,16 +169,28 @@ export function appendTranscriptEventInTransaction(
         : initiallyAuthorized;
   const compactionId = readCompactionEventId(persistedEvent);
   if (memoryPolicyAuthorized && compactionId) {
-    const sourceEventSeqs = [
-      ...(readAuthorizedTranscriptEventSeqs(database.db, scope.sessionId) ?? []),
-    ].filter((sourceEventSeq) => sourceEventSeq !== seq);
-    memoryPolicyAuthorized = recordTranscriptCompactionPolicyInTransaction({
-      compactionId,
+    const sourceEventSeqs = readCompactionSourceEventSeqs({
       database,
-      eventSeq: seq,
+      event: persistedEvent,
       sessionId: scope.sessionId,
-      sourceEventSeqs,
     });
+    memoryPolicyAuthorized = Boolean(
+      sourceEventSeqs &&
+      recordTranscriptCompactionPolicyInTransaction({
+        compactionId,
+        database,
+        eventSeq: seq,
+        sessionId: scope.sessionId,
+        sourceEventSeqs,
+      }),
+    );
+    if (!memoryPolicyAuthorized) {
+      invalidateTranscriptMemoryPolicyInTransaction({
+        database,
+        eventSeq: seq,
+        sessionId: scope.sessionId,
+      });
+    }
   }
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
@@ -254,6 +265,49 @@ function readCompactionEventId(event: TranscriptEvent): string | undefined {
   }
   const { id, type } = event as { id?: unknown; type?: unknown };
   return type === "compaction" && typeof id === "string" && id.trim() ? id : undefined;
+}
+
+function readCompactionSourceEventSeqs(params: {
+  database: OpenClawAgentDatabase;
+  event: TranscriptEvent;
+  sessionId: string;
+}): number[] | undefined {
+  if (!params.event || typeof params.event !== "object" || Array.isArray(params.event)) {
+    return undefined;
+  }
+  const { sourceEntryIds, type } = params.event as {
+    sourceEntryIds?: unknown;
+    type?: unknown;
+  };
+  if (
+    type !== "compaction" ||
+    !Array.isArray(sourceEntryIds) ||
+    sourceEntryIds.length === 0 ||
+    sourceEntryIds.some((entryId) => typeof entryId !== "string" || !entryId.trim())
+  ) {
+    return undefined;
+  }
+  const normalizedSourceEntryIds = sourceEntryIds.map((entryId) => entryId.trim());
+  if (new Set(normalizedSourceEntryIds).size !== normalizedSourceEntryIds.length) {
+    return undefined;
+  }
+  const db = getSessionKysely(params.database.db);
+  const sourceEventSeqs: number[] = [];
+  for (const entryId of normalizedSourceEntryIds) {
+    const identity = executeSqliteQueryTakeFirstSync(
+      params.database.db,
+      db
+        .selectFrom("transcript_event_identities")
+        .select("seq")
+        .where("session_id", "=", params.sessionId)
+        .where("event_id", "=", entryId),
+    );
+    if (!identity || !Number.isSafeInteger(identity.seq) || identity.seq < 0) {
+      return undefined;
+    }
+    sourceEventSeqs.push(identity.seq);
+  }
+  return sourceEventSeqs;
 }
 
 export function appendTranscriptEventsInTransaction(

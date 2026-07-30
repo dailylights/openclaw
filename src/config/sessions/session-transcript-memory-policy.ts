@@ -45,6 +45,7 @@ type TranscriptMemoryPolicyDatabase = Pick<
   | "memory_policy_sets"
   | "memory_run_exposures"
   | "session_memory_subject_snapshots"
+  | "transcript_event_identities"
   | "transcript_events"
   | "transcript_event_memory_policy_details"
   | "transcript_event_memory_policy_lineage"
@@ -1120,6 +1121,97 @@ function isStoredCompactionPolicyAuthorized(params: {
     ) &&
     params.detail.policy_set_revision.trim(),
   );
+}
+
+/**
+ * Verifies the exact entries a compaction planner will disclose before its
+ * summarizer runs. The later persisted binding is evidence, not authorization:
+ * by then a compaction model request has already received its transcript input.
+ */
+export function authorizeTranscriptCompactionSources(params: {
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+  sourceEntryIds: readonly string[];
+}): boolean {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return true;
+  }
+  try {
+    const sessionId = params.sessionId.trim();
+    const sourceEntryIds = params.sourceEntryIds.map((entryId) => entryId.trim());
+    if (
+      !sessionId ||
+      sourceEntryIds.length === 0 ||
+      sourceEntryIds.some((entryId) => !entryId) ||
+      new Set(sourceEntryIds).size !== sourceEntryIds.length
+    ) {
+      return false;
+    }
+    const label = readCurrentTranscriptMemoryPolicyLabel({
+      agentId: params.database.agentId,
+      sessionId,
+    });
+    if (
+      !label ||
+      !labelMatchesExposure(label, params.database.agentId) ||
+      !labelHasPreparedPolicy(label)
+    ) {
+      return false;
+    }
+    const deliveryAudiences = parseCanonicalMemoryAudiences(label.deliveryAudiencesJson);
+    if (!deliveryAudiences?.length) {
+      return false;
+    }
+    const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+    const sourceEventSeqs: number[] = [];
+    for (const entryId of sourceEntryIds) {
+      const identity = executeSqliteQueryTakeFirstSync(
+        params.database.db,
+        db
+          .selectFrom("transcript_event_identities")
+          .select("seq")
+          .where("session_id", "=", sessionId)
+          .where("event_id", "=", entryId),
+      );
+      if (
+        !identity ||
+        !Number.isSafeInteger(identity.seq) ||
+        identity.seq < 0 ||
+        !isStoredTranscriptEventAuthorized(params.database.db, sessionId, identity.seq)
+      ) {
+        return false;
+      }
+      sourceEventSeqs.push(identity.seq);
+    }
+    const sources = sourceEventSeqs.map((eventSeq) => {
+      const policySetId = readEffectiveTranscriptEventPolicySetId(
+        params.database.db,
+        sessionId,
+        eventSeq,
+      );
+      return policySetId ? readStoredPolicySetFacts(params.database.db, policySetId) : undefined;
+    });
+    if (!sources.every((source): source is StoredPolicySetFacts => source !== undefined)) {
+      return false;
+    }
+    const audiences = intersectCompactionAudiences(sources);
+    const requirements = mergeCompactionPolicyRequirements(sources);
+    return Boolean(
+      audiences?.length &&
+      requirements &&
+      hasCurrentPolicyRequirements({
+        db: params.database.db,
+        agentId: params.database.agentId,
+        requirements,
+      }) &&
+      deliveryAudiences.every((audience) =>
+        audiences.some((candidate) => memoryAudienceKey(candidate) === memoryAudienceKey(audience)),
+      ),
+    );
+  } catch {
+    // Missing policy evidence cannot safely defer an egress authorization decision.
+    return false;
+  }
 }
 
 export type PreservedTranscriptMemoryPolicy = {

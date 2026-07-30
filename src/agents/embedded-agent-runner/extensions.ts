@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.js";
+import compactionMemoryPolicyExtension from "../agent-hooks/compaction-memory-policy.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import { resolveEffectiveCompactionMode } from "../agent-settings.js";
@@ -137,7 +138,8 @@ export function buildEmbeddedExtensionFactories(params: {
   sessionKey?: string;
   runId?: string;
 }): ExtensionFactory[] {
-  const factories: ExtensionFactory[] = [];
+  // This guard must run before an extension can issue a compaction model request.
+  const factories: ExtensionFactory[] = [compactionMemoryPolicyExtension];
   if (resolveEffectiveCompactionMode(params.cfg) === "safeguard") {
     const compactionCfg = params.cfg?.agents?.defaults?.compaction;
     const qualityGuardCfg = compactionCfg?.qualityGuard;

@@ -46,6 +46,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
   type: "compaction";
   summary: string;
   firstKeptEntryId: string;
+  /** Exact prior entries whose content entered the summarizer. */
+  sourceEntryIds?: string[];
   tokensBefore: number;
   /** Extension-specific data, such as artifact indexes or version markers. */
   details?: T;

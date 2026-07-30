@@ -4,6 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEffectiveMemoryPolicySetId } from "../../plugins/memory-invocation-serialization.js";
 import {
+  setTranscriptMemoryPolicyLabelReader,
+  type TranscriptMemoryPolicyLabel,
+} from "../../plugins/memory-transcript-policy-label.js";
+import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
@@ -38,6 +42,7 @@ import {
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionMemorySubjectLineageSeed } from "./session-memory-subject.js";
 import {
+  authorizeTranscriptCompactionSources,
   copyTranscriptMemoryPolicyInTransaction,
   recordTranscriptCompactionPolicyInTransaction,
 } from "./session-transcript-memory-policy.js";
@@ -231,8 +236,91 @@ function insertPolicyFixture(params: {
     );
 }
 
+function setCurrentCompactionPolicyLabel(params: {
+  audiences?: readonly { kind: string; id: string }[];
+  scope: TestScope;
+}): void {
+  const audiences = params.audiences ?? [{ kind: "user", id: "principal-1" }];
+  const sourcePolicySetIds = ["source-policy-1"];
+  const memoryPolicyRevision = "policy-revision-1";
+  const sourcePolicySetId = createEffectiveMemoryPolicySetId({
+    memoryPolicyRevision,
+    memberPolicySetIds: sourcePolicySetIds,
+  });
+  const deliveryAudiencesJson = JSON.stringify(audiences);
+  const database = openOpenClawAgentDatabase({
+    agentId: params.scope.agentId,
+    env: params.scope.env,
+  });
+  const snapshot = database.db
+    .prepare(
+      `SELECT session_identity_revision, subject_revision
+         FROM session_memory_subject_snapshots
+        WHERE session_id = ?`,
+    )
+    .get(params.scope.sessionId) as
+    | { session_identity_revision: string; subject_revision: string }
+    | undefined;
+  if (!snapshot) {
+    throw new Error("missing test subject snapshot");
+  }
+  const label = {
+    sourcePolicySetId,
+    policySetRevision: "policy-set-revision-1",
+    runExposureSetId: "exposure-set-1",
+    runExposureRevision: 1,
+    deliveryAudiencesJson,
+    actorEvidenceJson: "{}",
+    delegationJson: "null",
+    finalizedEgressAudiencesJson: deliveryAudiencesJson,
+    exposedResourceRevisionsJson: "[]",
+    sessionIdentityRevision: snapshot.session_identity_revision,
+    subjectRevision: snapshot.subject_revision,
+    runId: "run-1",
+    contextFingerprint: "context-1",
+    runExposure: {
+      exposureSetId: "exposure-set-1",
+      revisionNumber: 1,
+      agentId: params.scope.agentId,
+      runId: "run-1",
+      contextFingerprint: "context-1",
+      planId: "plan-1",
+      memoryPolicyRevision,
+      sourcePolicySetIdsJson: JSON.stringify(sourcePolicySetIds),
+      effectiveSourcePolicySetId: sourcePolicySetId,
+      exposedResourceRevisionsJson: "[]",
+      exposureReceiptIdsJson: "[]",
+      egressReceiptIdsJson: "[]",
+      deliveryAudiencesJson,
+      deliveryRevision: "delivery-1",
+      egressRegistryRevision: "registry-1",
+      createdAt: 1,
+    },
+    transcriptPolicy: {
+      version: 1,
+      policySetId: sourcePolicySetId,
+      policySetRevision: "policy-set-revision-1",
+      sourcePolicySetIds,
+      normalizedAudienceIntersection: audiences,
+      retentionState: "active",
+      requirements: [
+        {
+          stablePolicyId: "stable-policy-1",
+          capturedRevisionId: "stable-policy-revision-1",
+          expectedActiveRevisionId: "stable-policy-revision-1",
+          expectedRevocationEpoch: 0,
+        },
+      ],
+    },
+  } as TranscriptMemoryPolicyLabel;
+  setTranscriptMemoryPolicyLabelReader(({ agentId, sessionId }) =>
+    agentId === params.scope.agentId && sessionId === params.scope.sessionId ? label : undefined,
+  );
+}
+
 describe("transcript memory policy", () => {
   afterEach(async () => {
+    setTranscriptMemoryPolicyLabelReader(() => undefined);
     closeOpenClawAgentDatabasesForTest();
     await Promise.all(
       tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
@@ -513,6 +601,104 @@ describe("transcript memory policy", () => {
       )
       .run();
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("authorizes only exact planner sources for the current delivery audience", async () => {
+    const scope = await createScope("compaction-preflight");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "preflight-source-user",
+      message: { role: "user", content: "source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "preflight-source-assistant",
+      message: { role: "assistant", content: "source assistant" },
+    });
+    await replaceSqliteTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "preflight-source-assistant",
+        id: "preflight-compaction",
+        parentId: "preflight-source-assistant",
+        sourceEntryIds: ["preflight-source-user", "preflight-source-assistant"],
+        summary: "authorized source summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    insertPolicyFixture({ scope, eventSeq: 2 });
+    insertPolicyFixture({ scope, eventSeq: 3 });
+    setCurrentCompactionPolicyLabel({ scope });
+
+    expect(
+      authorizeTranscriptCompactionSources({
+        database,
+        sessionId: scope.sessionId,
+        sourceEntryIds: ["preflight-source-user", "preflight-source-assistant"],
+      }),
+    ).toBe(true);
+    expect(
+      authorizeTranscriptCompactionSources({
+        database,
+        sessionId: scope.sessionId,
+        sourceEntryIds: ["preflight-source-user", "missing-source"],
+      }),
+    ).toBe(false);
+
+    setCurrentCompactionPolicyLabel({
+      scope,
+      audiences: [{ kind: "conversation", id: "outside-common-audience" }],
+    });
+    expect(
+      authorizeTranscriptCompactionSources({
+        database,
+        sessionId: scope.sessionId,
+        sourceEntryIds: ["preflight-source-user", "preflight-source-assistant"],
+      }),
+    ).toBe(false);
+
+    setCurrentCompactionPolicyLabel({ scope });
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "preflight-compaction",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [1, 2],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const compactionBinding = database.db
+      .prepare(
+        `SELECT source_event_seqs_json
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "preflight-compaction");
+    expect(compactionBinding).toEqual({ source_event_seqs_json: '["1","2"]' });
+
+    database.db
+      .prepare(
+        "UPDATE memory_policies SET revocation_epoch = 1, updated_at = 2 WHERE policy_id = 'stable-policy-1'",
+      )
+      .run();
+    expect(
+      authorizeTranscriptCompactionSources({
+        database,
+        sessionId: scope.sessionId,
+        sourceEntryIds: ["preflight-source-user", "preflight-source-assistant"],
+      }),
+    ).toBe(false);
   });
 
   it("derives compaction authority from the common source audience and stable requirements", async () => {

@@ -387,6 +387,37 @@ describe("session-entry compaction budgeting", () => {
     }
     expect(result.value.firstKeptEntryId).toBe("entry-4");
     expect(result.value.messagesToSummarize.length).toBeGreaterThan(0);
+    expect(result.value.sourceEntryIds).toEqual(expect.arrayContaining(["entry-0", "entry-1"]));
+  });
+
+  it("records a prior compaction summary among its model-visible sources", () => {
+    const entries: SessionTreeEntry[] = [
+      createMessageEntry({ role: "user", content: "first request", timestamp: 1 }, 0),
+      createMessageEntry(createAssistant("first answer", createUsage(2), 2), 1),
+      {
+        type: "compaction",
+        id: "entry-2",
+        parentId: "entry-1",
+        timestamp: new Date(3).toISOString(),
+        summary: "previous summary",
+        firstKeptEntryId: "entry-0",
+        tokensBefore: 10,
+      },
+      createMessageEntry({ role: "user", content: "second request", timestamp: 4 }, 3),
+      createMessageEntry(createAssistant("second answer", createUsage(100_000), 5), 4),
+    ];
+
+    const result = prepareCompaction(entries, {
+      enabled: true,
+      reserveTokens: 0,
+      keepRecentTokens: 1,
+    });
+
+    expect(result.ok && result.value).toBeTruthy();
+    if (!result.ok || !result.value) {
+      throw new Error("expected compactable continuation after a prior summary");
+    }
+    expect(result.value.sourceEntryIds).toContain("entry-2");
   });
 
   it("keeps reset-filtered tool rows out of later compaction input", () => {
@@ -430,6 +461,7 @@ describe("session-entry compaction budgeting", () => {
     expect(JSON.stringify(result.value.messagesToSummarize)).not.toContain("hidden tool result");
     expect(JSON.stringify(result.value.turnPrefixMessages)).not.toContain("hidden tool result");
     expect(["entry-5", "entry-6"]).toContain(result.value.firstKeptEntryId);
+    expect(result.value.sourceEntryIds).toEqual(expect.arrayContaining(["entry-1", "entry-3"]));
   });
 
   it("moves the cut earlier when a reset kept-tail prelude consumes the compaction budget", () => {

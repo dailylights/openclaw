@@ -243,6 +243,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       compactionResult.tokensBefore,
       compactionResult.details,
       fromExtension,
+      preparation.sourceEntryIds,
     );
     const newEntries = this.sessionManager.getEntries();
     const sessionContext = this.sessionManager.buildSessionContext();
