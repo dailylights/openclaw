@@ -373,6 +373,32 @@ describe("transcript memory policy", () => {
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
   });
 
+  it("invalidates captured policy labels after their stable policy advances revision", async () => {
+    const scope = await createScope("revised");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "revised-message",
+      message: { role: "user", content: "must disappear after revision change" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+
+    await expect(loadTranscriptEvents(scope)).resolves.toHaveLength(2);
+
+    database.db
+      .prepare(
+        "UPDATE memory_policies SET current_revision_id = 'stable-policy-revision-2', updated_at = 2 WHERE policy_id = 'stable-policy-1'",
+      )
+      .run();
+
+    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
   it("requires a compaction record that remains bound to authorized source events", async () => {
     const scope = await createScope("compaction-policy");
     await upsertSessionEntry(scope, {

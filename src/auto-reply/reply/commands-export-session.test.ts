@@ -2,6 +2,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { generateExportHtmlVendorAssets } from "../../../scripts/runtime-postbuild.mjs";
+import type { TranscriptMemoryPolicyExportManifest } from "../../config/sessions/session-transcript-memory-policy.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
 import { buildExportSessionReply } from "./commands-export-session.js";
 import type { HandleCommandsParams } from "./commands-types.js";
@@ -36,7 +37,9 @@ const hoisted = await vi.hoisted(async () => {
       (params: { sessionKey: string; entry?: { sessionId?: string } }) => unknown
     >(() => undefined),
     loadTranscriptEventsMock: vi.fn(async (): Promise<unknown[]> => []),
-    readTranscriptMemoryPolicyExportManifestMock: vi.fn(() => undefined),
+    readTranscriptMemoryPolicyExportManifestMock: vi.fn<
+      () => TranscriptMemoryPolicyExportManifest | undefined
+    >(() => undefined),
     exportHtmlTemplateContents: new Map<string, string>(),
     sessionTranscriptEvents: [] as unknown[],
   };
@@ -304,15 +307,40 @@ describe("buildExportSessionReply", () => {
   });
 
   it("embeds the current-policy transcript manifest without deriving it from session entries", async () => {
-    const memoryPolicyManifest = {
-      schemaVersion: 1 as const,
+    const memoryPolicyManifest: TranscriptMemoryPolicyExportManifest = {
+      schemaVersion: 1,
       sessionId: "session-1",
       events: [
         {
           eventSeq: 3,
+          contentSha256: "a".repeat(64),
           preserved: {
-            policy: { source_policy_set_id: "policy-set-1" },
-            detail: { policy_set_revision: "revision-1" },
+            policy: {
+              authorization_status: "authorized",
+              context_fingerprint: "context-1",
+              created_at: 1,
+              delivery_audiences_json: '[{"id":"principal-1","kind":"user"}]',
+              event_seq: 3,
+              run_exposure_revision: 1,
+              run_exposure_set_id: "exposure-set-1",
+              run_id: "run-1",
+              session_id: "session-1",
+              session_identity_revision: "session-identity-revision-1",
+              source_policy_set_id: "policy-set-1",
+              subject_revision: "subject-revision-1",
+            },
+            detail: {
+              actor_evidence_json: "{}",
+              created_at: 1,
+              delegation_json: "null",
+              event_seq: 3,
+              exposed_resource_revisions_json: "[]",
+              finalized_egress_audiences_json: '[{"id":"principal-1","kind":"user"}]',
+              origin_event_seq: 3,
+              origin_session_id: "session-1",
+              policy_set_revision: "revision-1",
+              session_id: "session-1",
+            },
             lineage: {
               source_session_id: "session-1",
               source_event_seq: 3,
@@ -320,6 +348,8 @@ describe("buildExportSessionReply", () => {
               origin_event_seq: 3,
               transition_kind: "append",
               created_at: 1,
+              event_seq: 3,
+              session_id: "session-1",
             },
           },
         },
