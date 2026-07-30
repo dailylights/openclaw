@@ -534,6 +534,79 @@ describe("transcript memory policy", () => {
     });
   });
 
+  it("preserves authorized companions through a same-database parent fork", async () => {
+    const scope = await createScope("same-database-fork");
+    const childSessionId = `${scope.sessionId}-child`;
+    const childSessionKey = `${scope.sessionKey}-child`;
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "source-user",
+      message: { role: "user", content: "forked source prompt" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "source-assistant",
+      message: { role: "assistant", content: "forked source response" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    insertPolicyFixture({ scope, eventSeq: 2 });
+
+    const forked = await forkSessionFromParentTranscript({
+      agentId: scope.agentId,
+      parentEntry: { sessionId: scope.sessionId, updatedAt: 1 },
+      parentSessionKey: scope.sessionKey,
+      sessionKey: childSessionKey,
+      storePath: database.path,
+      targetSessionId: childSessionId,
+    });
+    if (forked.status !== "created") {
+      throw new Error("expected same-database parent fork");
+    }
+
+    await expect(
+      loadTranscriptEvents({
+        agentId: scope.agentId,
+        env: scope.env,
+        sessionId: childSessionId,
+        sessionKey: childSessionKey,
+        storePath: database.path,
+      }),
+    ).resolves.toMatchObject([{ id: "source-user" }, { id: "source-assistant" }]);
+    expect(
+      database.db
+        .prepare(
+          `SELECT event_seq, source_session_id, source_event_seq, origin_session_id,
+                  origin_event_seq, transition_kind
+             FROM transcript_event_memory_policy_lineage
+            WHERE session_id = ?
+            ORDER BY event_seq ASC`,
+        )
+        .all(childSessionId),
+    ).toEqual([
+      {
+        event_seq: 1,
+        source_session_id: scope.sessionId,
+        source_event_seq: 1,
+        origin_session_id: scope.sessionId,
+        origin_event_seq: 1,
+        transition_kind: "fork",
+      },
+      {
+        event_seq: 2,
+        source_session_id: scope.sessionId,
+        source_event_seq: 2,
+        origin_session_id: scope.sessionId,
+        origin_event_seq: 2,
+        transition_kind: "fork",
+      },
+    ]);
+  });
+
   it("persists immutable policy lineage with an archive before reclaiming source rows", async () => {
     const scope = await createScope("archive-lineage");
     await upsertSessionEntry(scope, {
