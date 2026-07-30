@@ -41,6 +41,7 @@ import {
   copyTranscriptMemoryPolicyInTransaction,
   readAuthorizedTranscriptEventSeqs,
   recordTranscriptMemoryPolicyInTransaction,
+  recordTranscriptCompactionPolicyInTransaction,
   restoreTranscriptMemoryPolicyInTransaction,
   isTranscriptMemoryPolicyEnforcedInDatabase,
   type PreservedTranscriptMemoryPolicy,
@@ -147,7 +148,7 @@ export function appendTranscriptEventInTransaction(
       options.memoryPolicySource !== undefined ||
       options.preservedMemoryPolicy !== undefined,
   });
-  const memoryPolicyAuthorized =
+  let memoryPolicyAuthorized =
     options.preservedMemoryPolicy && !initiallyAuthorized
       ? restoreTranscriptMemoryPolicyInTransaction({
           database,
@@ -166,6 +167,19 @@ export function appendTranscriptEventInTransaction(
             createdAt,
           })
         : initiallyAuthorized;
+  const compactionId = readCompactionEventId(persistedEvent);
+  if (memoryPolicyAuthorized && compactionId) {
+    const sourceEventSeqs = [
+      ...(readAuthorizedTranscriptEventSeqs(database.db, scope.sessionId) ?? []),
+    ].filter((sourceEventSeq) => sourceEventSeq !== seq);
+    memoryPolicyAuthorized = recordTranscriptCompactionPolicyInTransaction({
+      compactionId,
+      database,
+      eventSeq: seq,
+      sessionId: scope.sessionId,
+      sourceEventSeqs,
+    });
+  }
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
   }
@@ -231,6 +245,14 @@ function scheduleTranscriptProjectionReconcile(
     path: database.path,
     preferredSessionId: scope.sessionId,
   });
+}
+
+function readCompactionEventId(event: TranscriptEvent): string | undefined {
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    return undefined;
+  }
+  const { id, type } = event as { id?: unknown; type?: unknown };
+  return type === "compaction" && typeof id === "string" && id.trim() ? id : undefined;
 }
 
 export function appendTranscriptEventsInTransaction(

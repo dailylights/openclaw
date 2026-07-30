@@ -34,6 +34,7 @@ import { ensureOpenClawAgentScopedMemorySchema } from "../../state/openclaw-agen
 type TranscriptMemoryPolicyDatabase = Pick<
   OpenClawAgentDatabaseSchema,
   | "memory_migrations"
+  | "memory_compaction_policies"
   | "memory_policies"
   | "memory_policy_revisions"
   | "memory_policy_set_metadata"
@@ -577,6 +578,7 @@ function isStoredTranscriptEventAuthorized(
   db: DatabaseSync,
   sessionId: string,
   eventSeq: number,
+  options: { skipCompactionPolicy?: boolean } = {},
 ): boolean {
   const kysely = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(db);
   const row = executeSqliteQueryTakeFirstSync(
@@ -656,7 +658,7 @@ function isStoredTranscriptEventAuthorized(
             .select(["session_id", "session_identity_revision", "subject_revision"])
             .where("session_id", "=", detail.origin_session_id),
         );
-  return isAuthorizedTranscriptPolicyBinding({
+  const basicPolicyAuthorized = isAuthorizedTranscriptPolicyBinding({
     db,
     row,
     snapshot,
@@ -667,6 +669,74 @@ function isStoredTranscriptEventAuthorized(
     detail,
     lineage,
   });
+  if (!basicPolicyAuthorized || options.skipCompactionPolicy === true) {
+    return basicPolicyAuthorized;
+  }
+  const compaction = readTranscriptCompactionIdentity(db, sessionId, eventSeq);
+  if (!compaction) {
+    return true;
+  }
+  const compactionPolicy = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("memory_compaction_policies")
+      .selectAll()
+      .where("compaction_id", "=", compaction.id),
+  );
+  if (
+    !detail ||
+    !compactionPolicy ||
+    compactionPolicy.session_id !== sessionId ||
+    compactionPolicy.authorization_status !== "authorized" ||
+    compactionPolicy.source_policy_set_id !== row.source_policy_set_id ||
+    compactionPolicy.policy_set_revision !== detail.policy_set_revision
+  ) {
+    return false;
+  }
+  const sourceEventSeqs = parseCanonicalMemoryStringArray(
+    compactionPolicy.source_event_seqs_json,
+  )?.map((value) => Number(value));
+  if (
+    !sourceEventSeqs ||
+    sourceEventSeqs.length === 0 ||
+    sourceEventSeqs.some(
+      (sourceEventSeq) =>
+        !Number.isSafeInteger(sourceEventSeq) || sourceEventSeq < 0 || sourceEventSeq >= eventSeq,
+    )
+  ) {
+    return false;
+  }
+  return sourceEventSeqs.every((sourceEventSeq) =>
+    isStoredTranscriptEventAuthorized(db, sessionId, sourceEventSeq),
+  );
+}
+
+function readTranscriptCompactionIdentity(
+  db: DatabaseSync,
+  sessionId: string,
+  eventSeq: number,
+): { id: string } | undefined {
+  // The event supplies only its immutable identity; authorization comes from
+  // the companion record and its revalidated source companions below.
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(db)
+      .selectFrom("transcript_events")
+      .select("event_json")
+      .where("session_id", "=", sessionId)
+      .where("seq", "=", eventSeq),
+  );
+  if (!row) {
+    return undefined;
+  }
+  try {
+    const event = JSON.parse(row.event_json) as { id?: unknown; type?: unknown };
+    return event.type === "compaction" && typeof event.id === "string" && event.id.trim()
+      ? { id: event.id }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type PreservedTranscriptMemoryPolicy = {
@@ -1214,6 +1284,92 @@ export function recordTranscriptMemoryPolicyInTransaction(params: {
     );
   }
   return isStoredTranscriptEventAuthorized(database.db, params.sessionId, params.eventSeq);
+}
+
+/** Records the summary's authoritative source companions before exposing a compaction event. */
+export function recordTranscriptCompactionPolicyInTransaction(params: {
+  compactionId: string;
+  database: OpenClawAgentDatabase;
+  eventSeq: number;
+  sessionId: string;
+  sourceEventSeqs: readonly number[];
+}): boolean {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return true;
+  }
+  const compactionId = params.compactionId.trim();
+  const sourceEventSeqs = [...new Set(params.sourceEventSeqs)].toSorted(
+    (left, right) => left - right,
+  );
+  if (
+    !compactionId ||
+    sourceEventSeqs.length === 0 ||
+    sourceEventSeqs.some(
+      (sourceEventSeq) =>
+        !Number.isSafeInteger(sourceEventSeq) ||
+        sourceEventSeq < 0 ||
+        sourceEventSeq >= params.eventSeq,
+    ) ||
+    !isStoredTranscriptEventAuthorized(params.database.db, params.sessionId, params.eventSeq, {
+      skipCompactionPolicy: true,
+    }) ||
+    !sourceEventSeqs.every((sourceEventSeq) =>
+      isStoredTranscriptEventAuthorized(params.database.db, params.sessionId, sourceEventSeq),
+    )
+  ) {
+    return false;
+  }
+  const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+  const policy = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("transcript_event_memory_policies")
+      .select(["source_policy_set_id"])
+      .where("session_id", "=", params.sessionId)
+      .where("event_seq", "=", params.eventSeq),
+  );
+  const detail = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("transcript_event_memory_policy_details")
+      .select(["policy_set_revision"])
+      .where("session_id", "=", params.sessionId)
+      .where("event_seq", "=", params.eventSeq),
+  );
+  if (!policy?.source_policy_set_id || !detail) {
+    return false;
+  }
+  const sourceEventSeqsJson = canonicalMemoryStringArrayJson(sourceEventSeqs.map(String));
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .insertInto("memory_compaction_policies")
+      .values({
+        authorization_status: "authorized",
+        compaction_id: compactionId,
+        created_at: Date.now(),
+        policy_set_revision: detail.policy_set_revision,
+        session_id: params.sessionId,
+        source_event_seqs_json: sourceEventSeqsJson,
+        source_policy_set_id: policy.source_policy_set_id,
+      })
+      .onConflict((conflict) => conflict.column("compaction_id").doNothing()),
+  );
+  const persisted = executeSqliteQueryTakeFirstSync(
+    params.database.db,
+    db
+      .selectFrom("memory_compaction_policies")
+      .selectAll()
+      .where("compaction_id", "=", compactionId),
+  );
+  return Boolean(
+    persisted &&
+    persisted.session_id === params.sessionId &&
+    persisted.authorization_status === "authorized" &&
+    persisted.source_policy_set_id === policy.source_policy_set_id &&
+    persisted.policy_set_revision === detail.policy_set_revision &&
+    persisted.source_event_seqs_json === sourceEventSeqsJson,
+  );
 }
 
 export type TranscriptMemoryPolicyTransitionKind =

@@ -35,7 +35,10 @@ import {
 } from "./session-accessor.sqlite-transcript-store.js";
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionMemorySubjectLineageSeed } from "./session-memory-subject.js";
-import { copyTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
+import {
+  copyTranscriptMemoryPolicyInTransaction,
+  recordTranscriptCompactionPolicyInTransaction,
+} from "./session-transcript-memory-policy.js";
 import { transcriptMemoryPolicyTesting } from "./session-transcript-memory-policy.test-support.js";
 
 type TestScope = {
@@ -367,6 +370,74 @@ describe("transcript memory policy", () => {
       )
       .run();
 
+    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("requires a compaction record that remains bound to authorized source events", async () => {
+    const scope = await createScope("compaction-policy");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "compaction-source-user",
+      message: { role: "user", content: "source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "compaction-source-assistant",
+      message: { role: "assistant", content: "source assistant" },
+    });
+    await replaceSqliteTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "compaction-source-user",
+        id: "compaction-policy-event",
+        parentId: "compaction-source-assistant",
+        summary: "authorized source summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2, 3]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "compaction-policy-event",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1, 2],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status, policy_set_revision, source_event_seqs_json
+             FROM memory_compaction_policies
+            WHERE compaction_id = ?`,
+        )
+        .get("compaction-policy-event"),
+    ).toEqual({
+      authorization_status: "authorized",
+      policy_set_revision: "policy-set-revision-1",
+      source_event_seqs_json: '["0","1","2"]',
+    });
+    await expect(loadTranscriptEvents(scope)).resolves.toHaveLength(4);
+
+    database.db
+      .prepare(
+        "UPDATE memory_policies SET revocation_epoch = 1, updated_at = 2 WHERE policy_id = 'stable-policy-1'",
+      )
+      .run();
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
   });
 
