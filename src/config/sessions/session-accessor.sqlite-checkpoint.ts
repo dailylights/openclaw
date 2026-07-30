@@ -344,7 +344,21 @@ function forkSqliteCheckpointTranscriptInTransaction(
       }),
       ...selectedEvents.filter((event) => !isSessionTranscriptHeader(event)),
     ],
-    { memorySubjectSeed: params.memorySubjectSeed },
+    {
+      ...(selected
+        ? {
+            memoryPolicySource: {
+              sessionId: selected.source.sessionId,
+              transitionKind: "checkpoint" as const,
+            },
+          }
+        : {
+            // Legacy checkpoint bytes have no companion-row mapping. They
+            // remain pending rather than inheriting the current run policy.
+            forceMemoryPolicyPending: true,
+          }),
+      memorySubjectSeed: params.memorySubjectSeed,
+    },
   );
   return {
     status: "created",

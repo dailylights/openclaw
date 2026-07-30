@@ -285,6 +285,7 @@ export async function noteSessionTranscriptHeaderHealth(params: {
                     ...currentRows.map((row) => row.createdAt),
                   ],
                   preserveSessionWindowRecency: true,
+                  preserveMemoryPoliciesByEventJson: true,
                 },
               );
               assertRepairPreservedEvents({ before: currentRows, database, sessionId });

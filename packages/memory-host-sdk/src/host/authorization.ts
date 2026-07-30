@@ -377,6 +377,29 @@ export type MemoryExportResult = DeepReadonly<{
   exportedHandles: readonly AuthorizedResourceHandle[];
 }>;
 
+/** A stable-policy requirement captured before a transcript commit. */
+export type MemoryTranscriptPolicyRequirement = DeepReadonly<{
+  stablePolicyId: string;
+  capturedRevisionId: string;
+  expectedActiveRevisionId: string;
+  expectedRevocationEpoch: number;
+}>;
+
+/**
+ * Opaque policy-set payload prepared by the selected memory plugin before the
+ * core-owned transcript transaction begins. Core persists and revalidates the
+ * stable identifiers, but never interprets store placement or ACL semantics.
+ */
+export type PreparedMemoryTranscriptPolicy = DeepReadonly<{
+  version: 1;
+  policySetId: string;
+  policySetRevision: string;
+  sourcePolicySetIds: readonly string[];
+  normalizedAudienceIntersection: readonly AudienceRef[];
+  requirements: readonly MemoryTranscriptPolicyRequirement[];
+  retentionState: "active";
+}>;
+
 export interface AuthorizedMemoryRuntime {
   readonly authorization: MemoryAuthorizationCapabilities;
   authorize(context: MemoryAccessContext): Promise<AuthorizedMemoryPlan>;
@@ -419,6 +442,12 @@ export interface AuthorizedMemoryRuntime {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;
   }): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
+  prepareTranscriptPolicy(params: {
+    context: MemoryAccessContext;
+    plan: AuthorizedMemoryPlan;
+    sourcePolicySetIds: readonly string[];
+    policySetId: string;
+  }): Promise<PreparedMemoryTranscriptPolicy>;
 }
 
 export type MemoryAuthorizationReasonCode =

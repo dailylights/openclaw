@@ -28,6 +28,7 @@ import {
   createMemoryDisplayHandleRegistry,
   hasCurrentMemoryEgressReceipts,
   mergeMemoryInvocationEnvelope,
+  refreshMemoryInvocationTranscriptPolicy,
   rememberMemoryDisplayHandle,
   resolveUniqueMemoryDisplayHandle,
   type MemoryInvocationState,
@@ -433,12 +434,14 @@ export async function initializeMemoryInvocation(params: {
       exposureReceiptIds: [],
       egressReceiptIds: [],
     });
+    await refreshMemoryInvocationTranscriptPolicy(state);
     state.initialization = "ready";
   } catch {
     state.context = undefined;
     state.plan = undefined;
     state.runtime = undefined;
     state.runExposure = undefined;
+    state.transcriptPolicy = undefined;
     state.virtualFilesystem = undefined;
     state.initialization = "unavailable";
   }
@@ -679,12 +682,14 @@ function readCurrentTranscriptMemoryPolicyLabel(params: {
   const state = token ? invocationStateByToken.get(token) : undefined;
   const context = state?.context;
   const exposure = state?.runExposure;
+  const transcriptPolicy = state?.transcriptPolicy;
   if (
     !token ||
     !state ||
     !revalidateInvocation(token, state) ||
     !context ||
     !exposure ||
+    !transcriptPolicy ||
     state.agentId !== params.agentId ||
     state.sessionId !== params.sessionId
   ) {
@@ -695,14 +700,26 @@ function readCurrentTranscriptMemoryPolicyLabel(params: {
   }
   return {
     sourcePolicySetId: exposure.effectiveSourcePolicySetId,
+    policySetRevision: transcriptPolicy.policySetRevision,
     runExposureSetId: exposure.exposureSetId,
     runExposureRevision: exposure.revisionNumber,
     deliveryAudiencesJson: exposure.deliveryAudiencesJson,
+    actorEvidenceJson: JSON.stringify({
+      actor: context.actor,
+      collaboration: context.collaboration,
+      conversation: context.conversation ?? null,
+      verifiedMemberships: context.verifiedMemberships,
+      verifiedPrincipals: context.verifiedPrincipals,
+    }),
+    delegationJson: JSON.stringify(context.delegation ?? null),
+    finalizedEgressAudiencesJson: exposure.deliveryAudiencesJson,
+    exposedResourceRevisionsJson: exposure.exposedResourceRevisionsJson,
     sessionIdentityRevision: context.sessionIdentityRevision,
     subjectRevision: context.subjectRevision,
     runId: context.runId,
     contextFingerprint: context.contextFingerprint,
     runExposure: exposure,
+    transcriptPolicy,
   };
 }
 

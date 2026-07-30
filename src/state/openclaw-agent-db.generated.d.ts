@@ -157,6 +157,16 @@ export interface MemoryAuditOutbox {
   updated_at: number;
 }
 
+export interface MemoryCompactionPolicies {
+  authorization_status: string;
+  compaction_id: string;
+  created_at: number;
+  policy_set_revision: string;
+  session_id: string;
+  source_event_seqs_json: string;
+  source_policy_set_id: string;
+}
+
 export interface MemoryEgressReceipts {
   allowed_audiences_json: string;
   context_fingerprint: string;
@@ -287,6 +297,23 @@ export interface MemoryPolicyRevisions {
   revision_id: string;
   revision_number: number;
   revocation_epoch: number;
+}
+
+export interface MemoryPolicySetMetadata {
+  created_at: number;
+  normalized_audience_intersection_json: string;
+  policy_set_id: string;
+  policy_set_revision: string;
+  retention_state: string;
+  source_policy_set_ids_json: string;
+}
+
+export interface MemoryPolicySetRequirements {
+  captured_revision_id: string;
+  expected_active_revision_id: string;
+  expected_revocation_epoch: number;
+  policy_set_id: string;
+  stable_policy_id: string;
 }
 
 export interface MemoryPolicySets {
@@ -731,6 +758,30 @@ export interface TranscriptEventMemoryPolicies {
   subject_revision: string | null;
 }
 
+export interface TranscriptEventMemoryPolicyDetails {
+  actor_evidence_json: string;
+  created_at: number;
+  delegation_json: string;
+  event_seq: number;
+  exposed_resource_revisions_json: string;
+  finalized_egress_audiences_json: string;
+  origin_event_seq: number;
+  origin_session_id: string;
+  policy_set_revision: string;
+  session_id: string;
+}
+
+export interface TranscriptEventMemoryPolicyLineage {
+  created_at: number;
+  event_seq: number;
+  origin_event_seq: number;
+  origin_session_id: string;
+  session_id: string;
+  source_event_seq: number;
+  source_session_id: string;
+  transition_kind: string;
+}
+
 export interface TranscriptEvents {
   created_at: number;
   event_json: string;
@@ -756,6 +807,7 @@ export interface DB {
   conversations: Conversations;
   heartbeat_outcomes: HeartbeatOutcomes;
   memory_audit_outbox: MemoryAuditOutbox;
+  memory_compaction_policies: MemoryCompactionPolicies;
   memory_egress_receipts: MemoryEgressReceipts;
   memory_embedding_cache: MemoryEmbeddingCache;
   memory_exposure_receipts: MemoryExposureReceipts;
@@ -769,6 +821,8 @@ export interface DB {
   memory_policies: MemoryPolicies;
   memory_policy_entries: MemoryPolicyEntries;
   memory_policy_revisions: MemoryPolicyRevisions;
+  memory_policy_set_metadata: MemoryPolicySetMetadata;
+  memory_policy_set_requirements: MemoryPolicySetRequirements;
   memory_policy_sets: MemoryPolicySets;
   memory_resource_revisions: MemoryResourceRevisions;
   memory_resource_subjects: MemoryResourceSubjects;
@@ -812,6 +866,8 @@ export interface DB {
   trajectory_runtime_events: TrajectoryRuntimeEvents;
   transcript_event_identities: TranscriptEventIdentities;
   transcript_event_memory_policies: TranscriptEventMemoryPolicies;
+  transcript_event_memory_policy_details: TranscriptEventMemoryPolicyDetails;
+  transcript_event_memory_policy_lineage: TranscriptEventMemoryPolicyLineage;
   transcript_events: TranscriptEvents;
   transcript_rewrite_watermarks: TranscriptRewriteWatermarks;
 }

@@ -6,6 +6,7 @@ import type {
   MemoryAccessContext,
   MemoryEgressAuthorizationReceipt,
   MemoryExposureReceipt,
+  PreparedMemoryTranscriptPolicy,
 } from "../memory-host-sdk/host/authorization.js";
 import type { DB as OpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db.generated.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
@@ -79,6 +80,7 @@ export type MemoryInvocationState = {
   plan?: AuthorizedMemoryPlan;
   runtime?: AdmittedAuthorizedMemoryReadRuntime;
   runExposure?: TranscriptMemoryRunExposureSnapshot;
+  transcriptPolicy?: PreparedMemoryTranscriptPolicy;
   virtualFilesystem?: MemoryVirtualFilesystemView;
   initialization: "created" | "initializing" | "ready" | "unavailable";
   displayHandles: MemoryDisplayHandleRegistry;
@@ -196,6 +198,53 @@ export function advanceMemoryRunExposure(params: {
   }) satisfies TranscriptMemoryRunExposureSnapshot;
   state.runExposure = snapshot;
   return snapshot;
+}
+
+/**
+ * The plugin resolves stable policy requirements before a transcript write.
+ * The later SQLite transaction receives only this immutable payload, never a
+ * plugin callback or an implicit policy lookup.
+ */
+export async function refreshMemoryInvocationTranscriptPolicy(
+  state: MemoryInvocationState,
+): Promise<void> {
+  const { context, plan, runtime, runExposure } = state;
+  if (!context || !plan || !runtime || !runExposure) {
+    throw new Error("memory transcript policy is unavailable");
+  }
+  const sourcePolicySetIds = parseCanonicalMemoryStringArray(runExposure.sourcePolicySetIdsJson);
+  if (!sourcePolicySetIds) {
+    throw new Error("memory transcript policy is unavailable");
+  }
+  const policy = await runtime.prepareTranscriptPolicy({
+    context,
+    plan,
+    sourcePolicySetIds,
+    policySetId: runExposure.effectiveSourcePolicySetId,
+  });
+  if (
+    policy.version !== 1 ||
+    policy.policySetId !== runExposure.effectiveSourcePolicySetId ||
+    policy.sourcePolicySetIds.some((value) => !sourcePolicySetIds.includes(value)) ||
+    policy.sourcePolicySetIds.length !== sourcePolicySetIds.length ||
+    policy.requirements.length === 0 ||
+    policy.requirements.some(
+      (requirement) =>
+        !requirement.stablePolicyId.trim() ||
+        !requirement.capturedRevisionId.trim() ||
+        !requirement.expectedActiveRevisionId.trim() ||
+        !Number.isSafeInteger(requirement.expectedRevocationEpoch) ||
+        requirement.expectedRevocationEpoch < 0,
+    )
+  ) {
+    throw new Error("memory transcript policy is unavailable");
+  }
+  state.transcriptPolicy = Object.freeze({
+    ...policy,
+    sourcePolicySetIds: Object.freeze([...policy.sourcePolicySetIds]),
+    normalizedAudienceIntersection: Object.freeze([...policy.normalizedAudienceIntersection]),
+    requirements: Object.freeze([...policy.requirements]),
+  });
 }
 
 function validateMemoryReceiptRows(params: {
@@ -320,6 +369,7 @@ export async function mergeMemoryInvocationEnvelope<T>(params: {
       exposureReceiptIds: [params.envelope.exposureReceipt.receiptId],
       egressReceiptIds: [params.envelope.egressReceipt.receiptId],
     });
+    await refreshMemoryInvocationTranscriptPolicy(params.state);
   } finally {
     release();
   }

@@ -6,6 +6,7 @@ import { createEffectiveMemoryPolicySetId } from "../../plugins/memory-invocatio
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import {
   appendTranscriptMessage,
@@ -15,6 +16,8 @@ import {
   upsertSessionEntry,
   withTranscriptWriteLock,
 } from "./session-accessor.js";
+import { copyTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
+import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { transcriptMemoryPolicyTesting } from "./session-transcript-memory-policy.test-support.js";
 
 type TestScope = {
@@ -78,8 +81,25 @@ function insertPolicyFixture(params: {
     memoryPolicyRevision: "policy-revision-1",
     memberPolicySetIds,
   });
+  const stablePolicyId = "stable-policy-1";
+  const policyRevisionId = "stable-policy-revision-1";
   const exposureSetId = "exposure-set-1";
   const audiencesJson = JSON.stringify([{ kind: "user", id: "principal-1" }]);
+  database.db
+    .prepare(
+      `INSERT OR IGNORE INTO memory_policies
+        (policy_id, agent_id, current_revision_id, revocation_epoch, lifecycle_state, created_at, updated_at)
+       VALUES (?, ?, ?, 0, 'active', 1, 1)`,
+    )
+    .run(stablePolicyId, params.scope.agentId, policyRevisionId);
+  database.db
+    .prepare(
+      `INSERT OR IGNORE INTO memory_policy_revisions
+        (revision_id, policy_id, revision_number, revocation_epoch, lifecycle_state,
+         actor_kind, actor_id, reason, created_at)
+       VALUES (?, ?, 1, 0, 'active', 'system', NULL, 'test', 1)`,
+    )
+    .run(policyRevisionId, stablePolicyId);
   database.db
     .prepare(
       `INSERT OR IGNORE INTO memory_policy_sets
@@ -92,6 +112,22 @@ function insertPolicyFixture(params: {
       "policy-revision-1",
       JSON.stringify(memberPolicySetIds),
     );
+  database.db
+    .prepare(
+      `INSERT OR IGNORE INTO memory_policy_set_metadata
+        (policy_set_id, policy_set_revision, source_policy_set_ids_json,
+         normalized_audience_intersection_json, retention_state, created_at)
+       VALUES (?, 'policy-set-revision-1', ?, ?, 'active', 1)`,
+    )
+    .run(policySetId, JSON.stringify(memberPolicySetIds), audiencesJson);
+  database.db
+    .prepare(
+      `INSERT OR IGNORE INTO memory_policy_set_requirements
+        (policy_set_id, stable_policy_id, captured_revision_id, expected_active_revision_id,
+         expected_revocation_epoch)
+       VALUES (?, ?, ?, ?, 0)`,
+    )
+    .run(policySetId, stablePolicyId, policyRevisionId, policyRevisionId);
   database.db
     .prepare(
       `INSERT OR IGNORE INTO memory_run_exposures
@@ -126,6 +162,36 @@ function insertPolicyFixture(params: {
       snapshot.session_identity_revision,
       snapshot.subject_revision,
       params.labelRunId ?? "run-1",
+    );
+  database.db
+    .prepare(
+      `INSERT INTO transcript_event_memory_policy_details
+        (session_id, event_seq, policy_set_revision, actor_evidence_json, delegation_json,
+         finalized_egress_audiences_json, exposed_resource_revisions_json,
+         origin_session_id, origin_event_seq, created_at)
+       VALUES (?, ?, 'policy-set-revision-1', '{}', 'null', ?, '[]', ?, ?, 1)`,
+    )
+    .run(
+      params.scope.sessionId,
+      params.eventSeq,
+      audiencesJson,
+      params.scope.sessionId,
+      params.eventSeq,
+    );
+  database.db
+    .prepare(
+      `INSERT INTO transcript_event_memory_policy_lineage
+        (session_id, event_seq, source_session_id, source_event_seq,
+         origin_session_id, origin_event_seq, transition_kind, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'append', 1)`,
+    )
+    .run(
+      params.scope.sessionId,
+      params.eventSeq,
+      params.scope.sessionId,
+      params.eventSeq,
+      params.scope.sessionId,
+      params.eventSeq,
     );
 }
 
@@ -256,6 +322,147 @@ describe("transcript memory policy", () => {
         .prepare("SELECT 1 FROM transcript_events WHERE session_id = ? AND event_json LIKE ?")
         .get(scope.sessionId, "%rolled-back-message%"),
     ).toBeUndefined();
+  });
+
+  it("invalidates captured policy labels after a stable policy is revoked", async () => {
+    const scope = await createScope("revoked");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "revoked-message",
+      message: { role: "user", content: "must disappear after revocation" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+
+    expect(
+      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
+    ).toEqual([scope.sessionId, "revoked-message"]);
+
+    database.db
+      .prepare(
+        "UPDATE memory_policies SET revocation_epoch = 1, updated_at = 2 WHERE policy_id = 'stable-policy-1'",
+      )
+      .run();
+
+    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("preserves a copied event's origin policy lineage without reauthorizing it", async () => {
+    const scope = await createScope("copy");
+    const target = {
+      ...scope,
+      sessionId: `${scope.sessionId}-target`,
+      sessionKey: `${scope.sessionKey}-target`,
+    };
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await upsertSessionEntry(target, {
+      sessionFile: "sqlite",
+      sessionId: target.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "copied-message",
+      message: { role: "user", content: "copied source" },
+    });
+    insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    await appendTranscriptMessage(target, {
+      eventId: "copied-message",
+      message: { role: "user", content: "copied source" },
+    });
+
+    runOpenClawAgentWriteTransaction(
+      (database) => {
+        expect(
+          copyTranscriptMemoryPolicyInTransaction({
+            database,
+            sourceSessionId: scope.sessionId,
+            sourceEventSeq: 1,
+            targetSessionId: target.sessionId,
+            targetEventSeq: 1,
+            transitionKind: "fork",
+            createdAt: 2,
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(
+      (await loadTranscriptEvents(target)).map((event) => (event as { id?: string }).id),
+    ).toEqual(["copied-message"]);
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_session_id, source_event_seq, origin_session_id, origin_event_seq, transition_kind
+             FROM transcript_event_memory_policy_lineage
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(target.sessionId),
+    ).toEqual({
+      source_session_id: scope.sessionId,
+      source_event_seq: 1,
+      origin_session_id: scope.sessionId,
+      origin_event_seq: 1,
+      transition_kind: "fork",
+    });
+  });
+
+  it("preserves exact companions across replacement and leaves new rows pending", async () => {
+    const scope = await createScope("replacement");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "preserved-message",
+      message: { role: "user", content: "historic content" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const original = await loadTranscriptEvents(scope);
+
+    await replaceSqliteTranscriptEvents(scope, original);
+
+    expect(
+      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
+    ).toEqual([scope.sessionId, "preserved-message"]);
+
+    await replaceSqliteTranscriptEvents(scope, [
+      original[0] as object,
+      {
+        type: "message",
+        id: "replacement-message",
+        parentId: null,
+        message: { role: "user", content: "new content without a prepared policy" },
+      },
+    ]);
+
+    expect(
+      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
+    ).toEqual([scope.sessionId]);
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending" });
   });
 
   it("does not expose an unlabeled row through the transcript write lock or derive from it", async () => {

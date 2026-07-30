@@ -15,6 +15,7 @@ import type {
   MemoryExposureReceipt,
   MemoryExportResult,
   MemorySyncResult,
+  PreparedMemoryTranscriptPolicy,
   MemoryWriteResult,
 } from "openclaw/plugin-sdk/memory-authorization";
 import type {
@@ -1960,6 +1961,74 @@ export function createBuiltinScopedMemoryRuntime(
     });
   };
 
+  /**
+   * Materialize the stable policy facts before core starts its transcript
+   * transaction. The payload contains no store paths or ACL entries, only the
+   * immutable identifiers core needs to fail closed on later revocation.
+   */
+  const prepareTranscriptPolicy = async (params: {
+    context: MemoryAccessContext;
+    plan: AuthorizedMemoryPlan;
+    sourcePolicySetIds: readonly string[];
+    policySetId: string;
+  }): Promise<PreparedMemoryTranscriptPolicy> => {
+    const nowMs = now();
+    const sourcePolicySetIds = [...new Set(params.sourcePolicySetIds)].toSorted(compareText);
+    if (
+      !params.policySetId.trim() ||
+      sourcePolicySetIds.some((policySetId) => !policySetId.trim())
+    ) {
+      throw new Error("authorized transcript policy is unavailable");
+    }
+    return withScopedMemoryDatabase(params.context.agentId, (database) => {
+      const planRecord = validatePlan({
+        database,
+        context: params.context,
+        plan: params.plan,
+        nowMs,
+      });
+      const requirements = planRecord.mounts
+        .map((mount) =>
+          Object.freeze({
+            stablePolicyId: mount.policyId,
+            capturedRevisionId: mount.policyRevisionId,
+            expectedActiveRevisionId: mount.policyRevisionId,
+            expectedRevocationEpoch: mount.policyRevocationEpoch,
+          }),
+        )
+        .toSorted((left, right) => compareText(left.stablePolicyId, right.stablePolicyId));
+      if (
+        requirements.some(
+          (requirement, index) =>
+            index > 0 && requirement.stablePolicyId === requirements[index - 1]?.stablePolicyId,
+        )
+      ) {
+        throw new Error("authorized transcript policy is unavailable");
+      }
+      const audiences = [...params.plan.allowedEgressAudiences].toSorted((left, right) =>
+        compareText(audienceKey(left), audienceKey(right)),
+      );
+      const policySetRevision = createScopedMemoryAggregateRevision("mpsr1", [
+        params.policySetId,
+        ...sourcePolicySetIds,
+        ...requirements.map(
+          (requirement) =>
+            `${requirement.stablePolicyId}\0${requirement.capturedRevisionId}\0${requirement.expectedActiveRevisionId}\0${requirement.expectedRevocationEpoch}`,
+        ),
+        ...audiences.map((audience) => audienceKey(audience)),
+      ]);
+      return Object.freeze({
+        version: 1 as const,
+        policySetId: params.policySetId,
+        policySetRevision,
+        sourcePolicySetIds: Object.freeze(sourcePolicySetIds),
+        normalizedAudienceIntersection: Object.freeze(audiences),
+        requirements: Object.freeze(requirements),
+        retentionState: "active" as const,
+      });
+    });
+  };
+
   const authorize = async (context: MemoryAccessContext): Promise<AuthorizedMemoryPlan> => {
     const agentId = normalizeAgentId(context.agentId);
     if (context.version !== 1 || agentId !== context.agentId) {
@@ -2233,5 +2302,6 @@ export function createBuiltinScopedMemoryRuntime(
     syncAuthorized,
     exportAuthorized,
     statusAuthorized,
+    prepareTranscriptPolicy,
   });
 }

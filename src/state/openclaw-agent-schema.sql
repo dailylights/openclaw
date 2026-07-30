@@ -1096,6 +1096,110 @@ CREATE TABLE IF NOT EXISTS transcript_event_memory_policies (
 CREATE INDEX IF NOT EXISTS idx_transcript_event_memory_policies_status
   ON transcript_event_memory_policies(session_id, authorization_status, event_seq);
 
+-- Immutable Phase 2B detail retained with every transcript authorization.
+-- Core stores the plugin-prepared facts but never interprets ACL/store semantics.
+CREATE TABLE IF NOT EXISTS memory_policy_set_metadata (
+  policy_set_id TEXT NOT NULL PRIMARY KEY,
+  policy_set_revision TEXT NOT NULL,
+  source_policy_set_ids_json TEXT NOT NULL,
+  normalized_audience_intersection_json TEXT NOT NULL,
+  retention_state TEXT NOT NULL CHECK (retention_state IN ('active', 'pending', 'revoked')),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (policy_set_id) REFERENCES memory_policy_sets(policy_set_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS memory_policy_set_metadata_no_update
+BEFORE UPDATE ON memory_policy_set_metadata
+BEGIN
+  SELECT RAISE(ABORT, 'memory policy set metadata is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_policy_set_metadata_no_delete
+BEFORE DELETE ON memory_policy_set_metadata
+BEGIN
+  SELECT RAISE(ABORT, 'memory policy set metadata cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS memory_policy_set_requirements (
+  policy_set_id TEXT NOT NULL,
+  stable_policy_id TEXT NOT NULL,
+  captured_revision_id TEXT NOT NULL,
+  expected_active_revision_id TEXT NOT NULL,
+  expected_revocation_epoch INTEGER NOT NULL CHECK (expected_revocation_epoch >= 0),
+  PRIMARY KEY (policy_set_id, stable_policy_id),
+  FOREIGN KEY (policy_set_id) REFERENCES memory_policy_sets(policy_set_id) ON DELETE RESTRICT,
+  FOREIGN KEY (stable_policy_id) REFERENCES memory_policies(policy_id) ON DELETE RESTRICT,
+  FOREIGN KEY (captured_revision_id) REFERENCES memory_policy_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (expected_active_revision_id) REFERENCES memory_policy_revisions(revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS memory_policy_set_requirements_no_update
+BEFORE UPDATE ON memory_policy_set_requirements
+BEGIN
+  SELECT RAISE(ABORT, 'memory policy set requirements are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_policy_set_requirements_no_delete
+BEFORE DELETE ON memory_policy_set_requirements
+BEGIN
+  SELECT RAISE(ABORT, 'memory policy set requirements cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS transcript_event_memory_policy_details (
+  session_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  policy_set_revision TEXT NOT NULL,
+  actor_evidence_json TEXT NOT NULL,
+  delegation_json TEXT NOT NULL,
+  finalized_egress_audiences_json TEXT NOT NULL,
+  exposed_resource_revisions_json TEXT NOT NULL,
+  origin_session_id TEXT NOT NULL,
+  origin_event_seq INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, event_seq),
+  FOREIGN KEY (session_id, event_seq)
+    REFERENCES transcript_event_memory_policies(session_id, event_seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS transcript_event_memory_policy_details_no_update
+BEFORE UPDATE ON transcript_event_memory_policy_details
+BEGIN
+  SELECT RAISE(ABORT, 'transcript event memory policy details are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS transcript_event_memory_policy_lineage (
+  session_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  source_session_id TEXT NOT NULL,
+  source_event_seq INTEGER NOT NULL,
+  origin_session_id TEXT NOT NULL,
+  origin_event_seq INTEGER NOT NULL,
+  transition_kind TEXT NOT NULL CHECK (transition_kind IN (
+    'append', 'archive', 'branch', 'checkpoint', 'export', 'fork', 'import', 'reset', 'rewind'
+  )),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, event_seq),
+  FOREIGN KEY (session_id, event_seq)
+    REFERENCES transcript_event_memory_policies(session_id, event_seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_transcript_event_memory_policy_lineage_origin
+  ON transcript_event_memory_policy_lineage(origin_session_id, origin_event_seq);
+
+CREATE TABLE IF NOT EXISTS memory_compaction_policies (
+  compaction_id TEXT NOT NULL PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  source_policy_set_id TEXT NOT NULL,
+  policy_set_revision TEXT NOT NULL,
+  source_event_seqs_json TEXT NOT NULL,
+  authorization_status TEXT NOT NULL CHECK (authorization_status IN ('authorized', 'pending')),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (source_policy_set_id) REFERENCES memory_policy_sets(policy_set_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_compaction_policies_session
+  ON memory_compaction_policies(session_id, authorization_status, created_at);
+
 CREATE TABLE IF NOT EXISTS standing_intents (
   intent_key INTEGER PRIMARY KEY,
   id TEXT NOT NULL UNIQUE,

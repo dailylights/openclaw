@@ -148,6 +148,7 @@ export async function forkSqliteSessionTranscriptFromParent(
         memorySubjectSeed: captured.memorySubjectSeed,
         parentSessionFile: captured.parentSessionFile,
         source: captured.source,
+        sourceSessionId: params.parentEntry.sessionId,
       });
     }, toDatabaseOptions(target));
     return {
@@ -452,6 +453,7 @@ function forkSqliteParentTranscriptInTransaction(
     memorySubjectSeed,
     parentSessionFile,
     source,
+    sourceSessionId: params.parentEntry.sessionId,
   });
   return {
     status: "created",
@@ -470,6 +472,7 @@ function writeSqliteForkedChildTranscriptInTransaction(
     memorySubjectSeed: TrustedSessionMemorySubjectSeed;
     parentSessionFile: string;
     source: SqliteParentForkSourceTranscript;
+    sourceSessionId: string;
   },
 ): void {
   appendTranscriptEventsInTransaction(
@@ -480,6 +483,9 @@ function writeSqliteForkedChildTranscriptInTransaction(
       source: params.source,
       targetSessionId: targetScope.sessionId,
     }),
-    { memorySubjectSeed: params.memorySubjectSeed },
+    {
+      memoryPolicySource: { sessionId: params.sourceSessionId, transitionKind: "fork" },
+      memorySubjectSeed: params.memorySubjectSeed,
+    },
   );
 }

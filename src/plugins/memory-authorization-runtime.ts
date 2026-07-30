@@ -20,6 +20,7 @@ const AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES = [
   "syncAuthorized",
   "exportAuthorized",
   "statusAuthorized",
+  "prepareTranscriptPolicy",
 ] as const satisfies readonly (keyof AuthorizedMemoryRuntime)[];
 
 type AuthorizedMemoryRuntimeMethodName = (typeof AUTHORIZED_MEMORY_RUNTIME_METHOD_NAMES)[number];
@@ -239,6 +240,9 @@ export async function admitMemoryAuthorizationRuntime(
       ).bind(runtime),
       statusAuthorized: (
         runtime.statusAuthorized as AuthorizedMemoryRuntime["statusAuthorized"]
+      ).bind(runtime),
+      prepareTranscriptPolicy: (
+        runtime.prepareTranscriptPolicy as AuthorizedMemoryRuntime["prepareTranscriptPolicy"]
       ).bind(runtime),
     });
     return Object.freeze({ ok: true, runtime: admittedRuntime });

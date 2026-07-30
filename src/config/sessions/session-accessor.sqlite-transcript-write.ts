@@ -56,7 +56,10 @@ import {
 } from "./session-accessor.sqlite-transcript-store.js";
 import type { SessionTranscriptWriteTransactionContext } from "./session-accessor.types.js";
 import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
-import { isTranscriptMemoryPolicyEnforcedInDatabase } from "./session-transcript-memory-policy.js";
+import {
+  isTranscriptMemoryPolicyEnforcedInDatabase,
+  readAuthorizedTranscriptEventSeqs,
+} from "./session-transcript-memory-policy.js";
 import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -119,7 +122,10 @@ export async function replaceSqliteTranscriptEvents(
   const resolved = resolveSqliteTranscriptScope(scope);
   await runExclusiveSqliteSessionWrite(resolved, async () => {
     runOpenClawAgentWriteTransaction((database) => {
-      replaceSqliteTranscriptEventsInTransaction(database, resolved, events, options);
+      replaceSqliteTranscriptEventsInTransaction(database, resolved, events, {
+        ...options,
+        preserveMemoryPoliciesByEventJson: true,
+      });
     }, toDatabaseOptions(resolved));
   });
 }
@@ -169,7 +175,9 @@ export function replaceSqliteTranscriptEventsSync(
     if (!fresh || fresh.entry.sessionId !== resolved.sessionId) {
       return;
     }
-    replaceSqliteTranscriptEventsInTransaction(database, resolved, events);
+    replaceSqliteTranscriptEventsInTransaction(database, resolved, events, {
+      preserveMemoryPoliciesByEventJson: true,
+    });
     replaced = true;
   }, toDatabaseOptions(resolved));
   return replaced;
@@ -189,7 +197,11 @@ export async function trimSqliteTranscriptForManualCompact(
       resolved.sessionKey,
       true,
     );
-    const lines = snapshotRows.map((row) => row.eventJson);
+    const authorizedSeqs = readAuthorizedTranscriptEventSeqs(database.db, resolved.sessionId);
+    const visibleRows = authorizedSeqs
+      ? snapshotRows.filter((row) => authorizedSeqs.has(row.seq))
+      : snapshotRows;
+    const lines = visibleRows.map((row) => row.eventJson);
     const retainedLines = selectRetainedLines(lines);
     if (!retainedLines) {
       return { trimmed: false };
@@ -199,7 +211,27 @@ export async function trimSqliteTranscriptForManualCompact(
         `Cannot compact SQLite transcript ${resolved.sessionId} without its current session entry`,
       );
     }
-    const retainedEvents = retainedLines.map((line) => JSON.parse(line) as TranscriptEvent);
+    const retainedCounts = new Map<string, number>();
+    for (const line of retainedLines) {
+      retainedCounts.set(line, (retainedCounts.get(line) ?? 0) + 1);
+    }
+    const retainedEvents: TranscriptEvent[] = [];
+    for (const row of snapshotRows) {
+      if (authorizedSeqs && !authorizedSeqs.has(row.seq)) {
+        // Pending or revoked rows are neither compacted nor deleted by a
+        // visible-only selection. Their companion stays the sole authority.
+        retainedEvents.push(JSON.parse(row.eventJson) as TranscriptEvent);
+        continue;
+      }
+      const remaining = retainedCounts.get(row.eventJson) ?? 0;
+      if (remaining > 0) {
+        retainedCounts.set(row.eventJson, remaining - 1);
+        retainedEvents.push(JSON.parse(row.eventJson) as TranscriptEvent);
+      }
+    }
+    if ([...retainedCounts.values()].some((count) => count !== 0)) {
+      throw new Error("SQLite transcript compaction may retain only current visible events");
+    }
     const archivedPath = writeSqliteTranscriptArchive({
       archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
       content: serializeJsonlLines(lines),
@@ -228,7 +260,9 @@ export async function trimSqliteTranscriptForManualCompact(
       }
       const identityKeys = collectSessionEntryLookupKeys(writeDatabase, resolved.sessionKey);
       previousIdentity = readSqliteSessionIdentitySnapshot(writeDatabase, identityKeys);
-      replaceSqliteTranscriptEventsInTransaction(writeDatabase, resolved, retainedEvents);
+      replaceSqliteTranscriptEventsInTransaction(writeDatabase, resolved, retainedEvents, {
+        preserveMemoryPoliciesByEventJson: true,
+      });
       const nextEntry = cloneSessionEntry(freshEntry);
       delete nextEntry.contextBudgetStatus;
       delete nextEntry.inputTokens;

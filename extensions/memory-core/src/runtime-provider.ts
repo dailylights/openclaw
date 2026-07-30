@@ -34,6 +34,7 @@ export function createMemoryRuntime(host: MemoryCoreRuntimeHost = {}): MemoryPlu
     syncAuthorized: authorizedRuntime.syncAuthorized,
     exportAuthorized: authorizedRuntime.exportAuthorized,
     statusAuthorized: authorizedRuntime.statusAuthorized,
+    prepareTranscriptPolicy: authorizedRuntime.prepareTranscriptPolicy,
     async getMemorySearchManager(params) {
       if (isMemoryIsolationCutoverAgent(params.agentId)) {
         return { manager: null, error: "memory unavailable" };

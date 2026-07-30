@@ -171,6 +171,36 @@ describe("builtin authorized scoped memory runtime", () => {
     );
   });
 
+  it("prepares stable transcript policy requirements before core commits an event", async () => {
+    const store = createStore({ defaultCapabilities: ["retrieve", "read", "status"] });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "status" });
+    const plan = await runtime.authorize(context);
+    const status = await runtime.statusAuthorized({ context, plan });
+
+    const prepared = await runtime.prepareTranscriptPolicy({
+      context,
+      plan,
+      policySetId: status.exposureReceipt.sourcePolicySetId,
+      sourcePolicySetIds: [status.exposureReceipt.sourcePolicySetId],
+    });
+
+    expect(prepared).toMatchObject({
+      version: 1,
+      policySetId: status.exposureReceipt.sourcePolicySetId,
+      retentionState: "active",
+      requirements: [
+        {
+          stablePolicyId: store.policyId,
+          capturedRevisionId: store.policyRevisionId,
+          expectedActiveRevisionId: store.policyRevisionId,
+          expectedRevocationEpoch: store.policyRevocationEpoch,
+        },
+      ],
+    });
+    expect(prepared.policySetRevision).toMatch(/^mpsr1_/u);
+  });
+
   it("commits a subject-selected remember through the pending-to-active lifecycle", async () => {
     createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
     const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });

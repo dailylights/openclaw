@@ -302,6 +302,10 @@ function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRunti
       const runtime = await loadRuntime();
       return await runtime.statusAuthorized!(params);
     },
+    async prepareTranscriptPolicy(params) {
+      const runtime = await loadRuntime();
+      return await runtime.prepareTranscriptPolicy!(params);
+    },
     async getMemorySearchManager(params) {
       if (isMemoryIsolationCutoverAgent(params.agentId)) {
         return { manager: null, error: "memory unavailable" };

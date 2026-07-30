@@ -1,15 +1,24 @@
-import type { TranscriptMemoryRunExposureSnapshot } from "./memory-invocation-receipts.js";
+import type {
+  MemoryInvocationState,
+  TranscriptMemoryRunExposureSnapshot,
+} from "./memory-invocation-receipts.js";
 
 export type TranscriptMemoryPolicyLabel = Readonly<{
   sourcePolicySetId: string;
+  policySetRevision: string;
   runExposureSetId: string;
   runExposureRevision: number;
   deliveryAudiencesJson: string;
+  actorEvidenceJson: string;
+  delegationJson: string;
+  finalizedEgressAudiencesJson: string;
+  exposedResourceRevisionsJson: string;
   sessionIdentityRevision: string;
   subjectRevision: string;
   runId: string;
   contextFingerprint: string;
   runExposure: TranscriptMemoryRunExposureSnapshot;
+  transcriptPolicy: NonNullable<MemoryInvocationState["transcriptPolicy"]>;
 }>;
 
 type TranscriptMemoryPolicyLabelReader = (params: {
