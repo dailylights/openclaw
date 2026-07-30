@@ -124,7 +124,6 @@ export async function replaceSqliteTranscriptEvents(
     runOpenClawAgentWriteTransaction((database) => {
       replaceSqliteTranscriptEventsInTransaction(database, resolved, events, {
         ...options,
-        preserveMemoryPoliciesByEventJson: true,
       });
     }, toDatabaseOptions(resolved));
   });
@@ -175,9 +174,7 @@ export function replaceSqliteTranscriptEventsSync(
     if (!fresh || fresh.entry.sessionId !== resolved.sessionId) {
       return;
     }
-    replaceSqliteTranscriptEventsInTransaction(database, resolved, events, {
-      preserveMemoryPoliciesByEventJson: true,
-    });
+    replaceSqliteTranscriptEventsInTransaction(database, resolved, events);
     replaced = true;
   }, toDatabaseOptions(resolved));
   return replaced;
@@ -211,27 +208,9 @@ export async function trimSqliteTranscriptForManualCompact(
         `Cannot compact SQLite transcript ${resolved.sessionId} without its current session entry`,
       );
     }
-    const retainedCounts = new Map<string, number>();
-    for (const line of retainedLines) {
-      retainedCounts.set(line, (retainedCounts.get(line) ?? 0) + 1);
-    }
-    const retainedEvents: TranscriptEvent[] = [];
-    for (const row of snapshotRows) {
-      if (authorizedSeqs && !authorizedSeqs.has(row.seq)) {
-        // Pending or revoked rows are neither compacted nor deleted by a
-        // visible-only selection. Their companion stays the sole authority.
-        retainedEvents.push(JSON.parse(row.eventJson) as TranscriptEvent);
-        continue;
-      }
-      const remaining = retainedCounts.get(row.eventJson) ?? 0;
-      if (remaining > 0) {
-        retainedCounts.set(row.eventJson, remaining - 1);
-        retainedEvents.push(JSON.parse(row.eventJson) as TranscriptEvent);
-      }
-    }
-    if ([...retainedCounts.values()].some((count) => count !== 0)) {
-      throw new Error("SQLite transcript compaction may retain only current visible events");
-    }
+    // Compaction may reparent or otherwise normalize selected rows. Its raw
+    // output carries no source-row binding, so it must receive pending companions.
+    const retainedEvents = retainedLines.map((line) => JSON.parse(line) as TranscriptEvent);
     const archivedPath = writeSqliteTranscriptArchive({
       archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
       content: serializeJsonlLines(lines),
@@ -260,9 +239,7 @@ export async function trimSqliteTranscriptForManualCompact(
       }
       const identityKeys = collectSessionEntryLookupKeys(writeDatabase, resolved.sessionKey);
       previousIdentity = readSqliteSessionIdentitySnapshot(writeDatabase, identityKeys);
-      replaceSqliteTranscriptEventsInTransaction(writeDatabase, resolved, retainedEvents, {
-        preserveMemoryPoliciesByEventJson: true,
-      });
+      replaceSqliteTranscriptEventsInTransaction(writeDatabase, resolved, retainedEvents);
       const nextEntry = cloneSessionEntry(freshEntry);
       delete nextEntry.contextBudgetStatus;
       delete nextEntry.inputTokens;

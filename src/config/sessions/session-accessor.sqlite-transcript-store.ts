@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import {
@@ -52,6 +53,25 @@ import {
   parseSessionTranscriptTreeEntry,
 } from "./transcript-tree.js";
 import { resolveVisibleTranscriptAppendParentId } from "./transcript-visible-events.js";
+
+/** Immutable source-row binding for a maintenance rewrite that retains an existing companion. */
+export type TranscriptMemoryPolicyRewriteBinding = Readonly<{
+  sourceContentSha256: string;
+  sourceEventSeq: number;
+  targetEventIndex: number;
+}>;
+
+export function createTranscriptMemoryPolicyRewriteBinding(params: {
+  sourceEventJson: string;
+  sourceEventSeq: number;
+  targetEventIndex: number;
+}): TranscriptMemoryPolicyRewriteBinding {
+  return {
+    sourceContentSha256: sha256(params.sourceEventJson),
+    sourceEventSeq: params.sourceEventSeq,
+    targetEventIndex: params.targetEventIndex,
+  };
+}
 
 export function appendTranscriptEventInTransaction(
   database: OpenClawAgentDatabase,
@@ -422,17 +442,20 @@ export function replaceSqliteTranscriptEventsInTransaction(
     memorySubjectSeed?: TrustedSessionMemorySubjectSeed;
     /** Keep maintenance rewrites at their existing recency while invalidating stale projections. */
     preserveSessionWindowRecency?: boolean;
-    /** Reuse exact, still-valid companions for rows selected from this same transcript. */
-    preserveMemoryPoliciesByEventJson?: boolean;
+    /** Byte-bound source-row bindings for a maintenance rewrite. */
+    preservedMemoryPolicyBindings?: readonly TranscriptMemoryPolicyRewriteBinding[];
   } = {},
 ): void {
   const preservedTranscriptUpdatedAt =
     options.preserveSessionWindowRecency === true
       ? readTranscriptMutationStateInTransaction(database, resolved.sessionId).updatedAt
       : undefined;
-  const preservedPoliciesByEventJson = options.preserveMemoryPoliciesByEventJson
-    ? collectPreservedTranscriptPoliciesByEventJson(database, resolved.sessionId)
-    : undefined;
+  const preservedPoliciesByEventIndex = collectPreservedTranscriptPoliciesForRewrite({
+    database,
+    events,
+    preservedMemoryPolicyBindings: options.preservedMemoryPolicyBindings,
+    sessionId: resolved.sessionId,
+  });
   const memoryPolicyEnforced = isTranscriptMemoryPolicyEnforcedInDatabase(database.db);
   const previousGeneration = readTranscriptGenerationInTransaction(database, resolved.sessionId);
   const deleted = deleteSqliteTranscriptEventsInTransaction(database, resolved.sessionId);
@@ -474,10 +497,7 @@ export function replaceSqliteTranscriptEventsInTransaction(
         options.createdAtByIndex?.[eventIndex],
         {
           forceMemoryPolicyPending: memoryPolicyEnforced,
-          preservedMemoryPolicy: takePreservedTranscriptPolicy(
-            preservedPoliciesByEventJson,
-            canonicalizeTranscriptEventMedia(event),
-          ),
+          preservedMemoryPolicy: preservedPoliciesByEventIndex?.get(eventIndex),
         },
       )
     ) {
@@ -490,10 +510,16 @@ export function replaceSqliteTranscriptEventsInTransaction(
   }
 }
 
-function collectPreservedTranscriptPoliciesByEventJson(
-  database: OpenClawAgentDatabase,
-  sessionId: string,
-): Map<string, PreservedTranscriptMemoryPolicy[]> | undefined {
+function collectPreservedTranscriptPoliciesForRewrite(params: {
+  database: OpenClawAgentDatabase;
+  events: readonly TranscriptEvent[];
+  preservedMemoryPolicyBindings: readonly TranscriptMemoryPolicyRewriteBinding[] | undefined;
+  sessionId: string;
+}): Map<number, PreservedTranscriptMemoryPolicy> | undefined {
+  const { database, events, preservedMemoryPolicyBindings, sessionId } = params;
+  if (!preservedMemoryPolicyBindings) {
+    return undefined;
+  }
   const preserved = captureAuthorizedTranscriptMemoryPoliciesInTransaction({ database, sessionId });
   if (!preserved) {
     return undefined;
@@ -506,25 +532,41 @@ function collectPreservedTranscriptPoliciesByEventJson(
       .where("session_id", "=", sessionId)
       .orderBy("seq", "asc"),
   ).rows;
-  const byEventJson = new Map<string, PreservedTranscriptMemoryPolicy[]>();
-  for (const row of rows) {
-    const policy = preserved.get(row.seq);
-    if (!policy) {
+  const sourceEventJsonBySeq = new Map(rows.map((row) => [row.seq, row.event_json]));
+  const boundPolicies = new Map<number, PreservedTranscriptMemoryPolicy>();
+  const usedSourceSeqs = new Set<number>();
+  for (const binding of preservedMemoryPolicyBindings) {
+    if (
+      !Number.isSafeInteger(binding.targetEventIndex) ||
+      binding.targetEventIndex < 0 ||
+      binding.targetEventIndex >= events.length ||
+      !Number.isSafeInteger(binding.sourceEventSeq) ||
+      usedSourceSeqs.has(binding.sourceEventSeq) ||
+      boundPolicies.has(binding.targetEventIndex)
+    ) {
       continue;
     }
-    const matches = byEventJson.get(row.event_json) ?? [];
-    matches.push(policy);
-    byEventJson.set(row.event_json, matches);
+    const sourceEventJson = sourceEventJsonBySeq.get(binding.sourceEventSeq);
+    const policy = preserved.get(binding.sourceEventSeq);
+    const targetEventJson = JSON.stringify(
+      canonicalizeTranscriptEventMedia(events[binding.targetEventIndex] as TranscriptEvent),
+    );
+    if (
+      !sourceEventJson ||
+      !policy ||
+      sha256(sourceEventJson) !== binding.sourceContentSha256 ||
+      sha256(targetEventJson) !== binding.sourceContentSha256
+    ) {
+      continue;
+    }
+    usedSourceSeqs.add(binding.sourceEventSeq);
+    boundPolicies.set(binding.targetEventIndex, policy);
   }
-  return byEventJson;
+  return boundPolicies;
 }
 
-function takePreservedTranscriptPolicy(
-  policiesByEventJson: Map<string, PreservedTranscriptMemoryPolicy[]> | undefined,
-  event: TranscriptEvent,
-): PreservedTranscriptMemoryPolicy | undefined {
-  const policies = policiesByEventJson?.get(JSON.stringify(event));
-  return policies?.shift();
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function recordTranscriptReplacementMutation(

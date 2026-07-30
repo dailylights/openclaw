@@ -8,7 +8,10 @@ import {
   type SqliteTranscriptStorageRow,
 } from "../config/sessions/session-accessor.sqlite-read.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { replaceSqliteTranscriptEventsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
+import {
+  createTranscriptMemoryPolicyRewriteBinding,
+  replaceSqliteTranscriptEventsInTransaction,
+} from "../config/sessions/session-accessor.sqlite-transcript-store.js";
 import { resolveAllAgentSessionStoreTargetsSync } from "../config/sessions/targets.js";
 import { createSessionTranscriptHeader } from "../config/sessions/transcript-header.js";
 import {
@@ -285,7 +288,14 @@ export async function noteSessionTranscriptHeaderHealth(params: {
                     ...currentRows.map((row) => row.createdAt),
                   ],
                   preserveSessionWindowRecency: true,
-                  preserveMemoryPoliciesByEventJson: true,
+                  preservedMemoryPolicyBindings: currentRows.map((row, sourceEventIndex) =>
+                    createTranscriptMemoryPolicyRewriteBinding({
+                      sourceEventJson: row.eventJson,
+                      sourceEventSeq: row.seq,
+                      // Header repair inserts a pending header ahead of each authoritative source row.
+                      targetEventIndex: sourceEventIndex + 1,
+                    }),
+                  ),
                 },
               );
               assertRepairPreservedEvents({ before: currentRows, database, sessionId });

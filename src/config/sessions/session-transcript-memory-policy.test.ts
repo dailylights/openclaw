@@ -29,6 +29,10 @@ import {
   planSqliteSessionStateDeleteIfUnreferenced,
 } from "./session-accessor.sqlite-lifecycle-state.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import {
+  createTranscriptMemoryPolicyRewriteBinding,
+  replaceSqliteTranscriptEventsInTransaction,
+} from "./session-accessor.sqlite-transcript-store.js";
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionMemorySubjectLineageSeed } from "./session-memory-subject.js";
 import { copyTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
@@ -868,50 +872,90 @@ describe("transcript memory policy", () => {
     ).toEqual([{ authorization_status: "pending" }]);
   });
 
-  it("preserves exact companions across replacement and leaves new rows pending", async () => {
-    const scope = await createScope("replacement");
+  it("preserves explicitly bound rows but leaves reordered duplicate raw replacements pending", async () => {
+    const scope = await createScope("replacement-pending");
     await upsertSessionEntry(scope, {
       sessionFile: "sqlite",
       sessionId: scope.sessionId,
       updatedAt: 1,
     });
     await appendTranscriptMessage(scope, {
-      eventId: "preserved-message",
-      message: { role: "user", content: "historic content" },
+      eventId: "first-duplicate",
+      message: { content: "same bytes", role: "user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "second-duplicate",
+      message: { content: "same bytes", role: "user" },
     });
     const database = insertCutover(scope);
     insertPolicyFixture({ scope, eventSeq: 0 });
     insertPolicyFixture({ scope, eventSeq: 1 });
-    const original = await loadTranscriptEvents(scope);
+    insertPolicyFixture({ scope, eventSeq: 2 });
+    const sourceEvents = await loadTranscriptEvents(scope);
+    expect(sourceEvents).toHaveLength(3);
+    const sourceRows = database.db
+      .prepare(
+        `SELECT event_json, seq
+           FROM transcript_events
+          WHERE session_id = ?
+          ORDER BY seq ASC`,
+      )
+      .all(scope.sessionId) as Array<{ event_json: string; seq: number }>;
+    const reorderedEvents = [sourceEvents[0], sourceEvents[2], sourceEvents[1]];
+    const reorderedSourceRows = [sourceRows[0], sourceRows[2], sourceRows[1]];
+    const resolved = resolveSqliteScope(scope);
+    runOpenClawAgentWriteTransaction((writeDatabase) => {
+      replaceSqliteTranscriptEventsInTransaction(
+        writeDatabase,
+        { ...resolved, sessionId: scope.sessionId },
+        reorderedEvents,
+        {
+          preservedMemoryPolicyBindings: reorderedSourceRows.map((sourceRow, targetEventIndex) => {
+            if (!sourceRow) {
+              throw new Error("missing source row for rewrite binding");
+            }
+            return createTranscriptMemoryPolicyRewriteBinding({
+              sourceEventJson: sourceRow.event_json,
+              sourceEventSeq: sourceRow.seq,
+              targetEventIndex,
+            });
+          }),
+        },
+      );
+    }, toDatabaseOptions(resolved));
 
-    await replaceSqliteTranscriptEvents(scope, original);
-
-    expect(
-      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
-    ).toEqual([scope.sessionId, "preserved-message"]);
-
-    await replaceSqliteTranscriptEvents(scope, [
-      original[0] as object,
-      {
-        type: "message",
-        id: "replacement-message",
-        parentId: null,
-        message: { role: "user", content: "new content without a prepared policy" },
-      },
-    ]);
-
-    expect(
-      (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
-    ).toEqual([scope.sessionId]);
     expect(
       database.db
         .prepare(
-          `SELECT authorization_status
+          `SELECT event_seq, authorization_status, run_id
              FROM transcript_event_memory_policies
-            WHERE session_id = ? AND event_seq = 1`,
+            WHERE session_id = ?
+            ORDER BY event_seq ASC`,
         )
-        .get(scope.sessionId),
-    ).toEqual({ authorization_status: "pending" });
+        .all(scope.sessionId),
+    ).toEqual([
+      { authorization_status: "authorized", event_seq: 0, run_id: "run-1" },
+      { authorization_status: "authorized", event_seq: 1, run_id: "run-1" },
+      { authorization_status: "authorized", event_seq: 2, run_id: "run-1" },
+    ]);
+
+    await replaceSqliteTranscriptEvents(scope, reorderedEvents);
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT event_seq, authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ?
+            ORDER BY event_seq ASC`,
+        )
+        .all(scope.sessionId),
+    ).toEqual([
+      { authorization_status: "pending", event_seq: 0 },
+      { authorization_status: "pending", event_seq: 1 },
+      { authorization_status: "pending", event_seq: 2 },
+    ]);
+    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
   });
 
   it("does not expose an unlabeled row through the transcript write lock or derive from it", async () => {
