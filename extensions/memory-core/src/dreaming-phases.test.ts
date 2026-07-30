@@ -37,6 +37,15 @@ import {
   shortTermTestState as shortTermTesting,
 } from "./test-helpers.js";
 
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
+}));
+
 const { createTempWorkspace } = createMemoryCoreTestHarness();
 const DREAMING_TEST_BASE_TIME = new Date("2026-04-05T10:00:00.000Z");
 const DREAMING_TEST_DAY = "2026-04-05";
@@ -93,6 +102,8 @@ function restoreDreamingTestEnv(): void {
 
 afterEach(() => {
   restoreDreamingTestEnv();
+  cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+  cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
 });
 
 function requireCandidateByKey<T extends { key: string }>(candidates: T[], key: string): T {
@@ -382,6 +393,37 @@ async function readCandidateSnippets(workspaceDir: string, nowIso: string): Prom
 }
 
 describe("memory-core dreaming phases", () => {
+  it("does not read or write legacy dreaming artifacts for a cutover agent", async () => {
+    const workspaceDir = await createDreamingWorkspace();
+    const sourcePath = path.join(workspaceDir, "memory", `${DREAMING_TEST_DAY}.md`);
+    await fs.writeFile(sourcePath, "- private cutover source\n", "utf8");
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(true);
+
+    await expect(
+      runDreamingSweepPhases({
+        agentId: "main",
+        workspaceDir,
+        pluginConfig: {
+          dreaming: {
+            phases: {
+              light: { enabled: true, limit: 1 },
+              rem: { enabled: true, limit: 1 },
+            },
+          },
+        },
+        logger,
+      }),
+    ).resolves.toEqual({ degradedPhases: 0, pendingNarratives: 0 });
+
+    await expect(fs.readFile(sourcePath, "utf8")).resolves.toBe("- private cutover source\n");
+    await expectPathMissing(path.join(workspaceDir, "DREAMS.md"));
+    await expectPathMissing(path.join(workspaceDir, "memory", ".dreams"));
+    expect(logger.info).toHaveBeenCalledWith(
+      "memory-core: dreaming sweep skipped for scoped-memory agent.",
+    );
+  });
+
   it("ranks a valid duplicate ahead of an invalid dreaming timestamp", async () => {
     const workspaceDir = await createDreamingWorkspace();
     const now = new Date("2026-04-15T12:00:00.000Z");
