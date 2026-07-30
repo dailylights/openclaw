@@ -26,6 +26,7 @@ import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
+import { resolveScopedMemoryDelegationDenial } from "../agents/scoped-memory-delegation.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import {
   forkSessionFromParent,
@@ -520,6 +521,18 @@ export async function createGatewaySession(params: {
         ? { agentId: parentSelectedAgentId }
         : {}),
     });
+    if (params.spawnDepth !== undefined) {
+      const memoryDelegationDenial = resolveScopedMemoryDelegationDenial({
+        requesterAgentId: parentSessionTarget.agentId,
+        targetAgentId: agentId,
+      });
+      if (memoryDelegationDenial) {
+        return {
+          ok: false,
+          error: errorShape(ErrorCodes.UNAVAILABLE, memoryDelegationDenial),
+        };
+      }
+    }
   }
   const parentIncognito =
     parentSessionEntry?.incognito === true || isIncognitoSessionKey(canonicalParentSessionKey);

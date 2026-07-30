@@ -74,6 +74,7 @@ import {
 } from "./inherited-tool-deny.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSandboxRuntimeStatus } from "./sandbox/runtime-status.js";
+import { resolveScopedMemoryDelegationDenial } from "./scoped-memory-delegation.js";
 import {
   runSpawnPipeline,
   type SpawnBackendAdapter,
@@ -328,6 +329,17 @@ export async function spawnAcpDirect(
     });
   }
   const targetAgentId = targetAgentResult.agentId;
+  const memoryDelegationDenial = resolveScopedMemoryDelegationDenial({
+    requesterAgentId,
+    targetAgentId,
+  });
+  if (memoryDelegationDenial) {
+    return createAcpSpawnFailure({
+      status: "forbidden",
+      errorCode: "subagent_policy",
+      error: memoryDelegationDenial,
+    });
+  }
   const agentPolicyError = resolveAcpAgentPolicyError(cfg, targetAgentId);
   if (agentPolicyError) {
     return createAcpSpawnFailure({

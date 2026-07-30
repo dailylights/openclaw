@@ -18,6 +18,7 @@ import { listAgentIds, resolveAgentConfig } from "../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../child-admission.js";
 import { resolveSubagentSpawnModelSelection } from "../model-selection.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
+import { resolveScopedMemoryDelegationDenial } from "../scoped-memory-delegation.js";
 import { resolveSpawnedWorkspaceInheritance } from "../spawned-context.js";
 import { getSubagentDepthFromSessionStore } from "../subagent-depth.js";
 import { countActiveRunsForSession, registerSubagentRun } from "../subagent-registry.js";
@@ -197,6 +198,13 @@ export async function maybeSpawnVisibleSession(params: {
   const targetAgentId = params.requestedAgentId
     ? normalizeAgentId(params.requestedAgentId)
     : requesterAgentId;
+  const memoryDelegationDenial = resolveScopedMemoryDelegationDenial({
+    requesterAgentId,
+    targetAgentId,
+  });
+  if (memoryDelegationDenial) {
+    return { status: "forbidden", error: memoryDelegationDenial };
+  }
   if (params.raw.context === "fork" && targetAgentId !== requesterAgentId) {
     return {
       status: "error",

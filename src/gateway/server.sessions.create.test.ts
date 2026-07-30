@@ -75,6 +75,15 @@ vi.mock("../sessions/session-diff-baseline.js", async (importOriginal) => {
   return { ...actual, ensureSessionDiffBaseline: sessionDiffBaselineMocks.ensure };
 });
 
+const memoryDelegation = vi.hoisted(() => ({
+  resolveScopedMemoryDelegationDenial: vi.fn(),
+}));
+
+vi.mock("../agents/scoped-memory-delegation.js", () => ({
+  resolveScopedMemoryDelegationDenial: (...args: unknown[]) =>
+    memoryDelegation.resolveScopedMemoryDelegationDenial(...args),
+}));
+
 const { createSessionStoreDir, createSelectedGlobalSessionStore, openClient } =
   setupGatewaySessionsTestHarness();
 const execFileAsync = promisify(execFile);
@@ -84,6 +93,7 @@ beforeEach(() => {
   sessionDiffBaselineMocks.ensure.mockClear();
   // Baseline capture has dedicated owner coverage and one authenticated integration below.
   sessionDiffBaselineMocks.useReal = false;
+  memoryDelegation.resolveScopedMemoryDelegationDenial.mockReset();
 });
 
 async function makeNonGitTempDir(prefix: string): Promise<string> {
@@ -1802,6 +1812,31 @@ test("sessions.create rejects a trusted spawn whose parent differs from its agen
 
   expect(created.ok).toBe(false);
   expect(created.error?.message).toContain("spawn parent must match the trusted agent caller");
+});
+
+test("sessions.create rejects cutover spawn lineage before creating the child", async () => {
+  await createSessionStoreDir();
+  await writeSessionStore({
+    entries: {
+      "agent:main:main": sessionStoreEntry("sess-cutover-spawn-parent"),
+    },
+  });
+  memoryDelegation.resolveScopedMemoryDelegationDenial.mockReturnValueOnce(
+    "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.",
+  );
+
+  const created = await directSessionReq("sessions.create", {
+    agentId: "main",
+    parentSessionKey: "agent:main:main",
+    spawnDepth: 1,
+  });
+
+  expect(created.ok).toBe(false);
+  expect(created.error).toMatchObject({
+    code: "UNAVAILABLE",
+    message:
+      "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.",
+  });
 });
 
 test("sessions.create rejects spawnDepth without parentSessionKey", async () => {

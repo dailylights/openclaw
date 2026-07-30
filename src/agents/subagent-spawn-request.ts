@@ -5,6 +5,7 @@ import type { SubagentLifecycleHookRunner } from "../plugins/hooks.js";
 import { isValidAgentId, normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { listAgentIds } from "./agent-scope-config.js";
 import { reserveChildAdmissionSlot } from "./child-admission.js";
+import { resolveScopedMemoryDelegationDenial } from "./scoped-memory-delegation.js";
 import { resolveSpawnAdmission, resolveSpawnMode } from "./spawn-plan.js";
 import { listSwarmRunsForGroup } from "./subagent-registry.js";
 import { resolveSubagentContextMode } from "./subagent-spawn-context.js";
@@ -201,6 +202,13 @@ export function resolveSubagentSpawnRequest(
   const targetAgentId = effectiveRequestedAgentId
     ? normalizeAgentId(effectiveRequestedAgentId)
     : requesterAgentId;
+  const memoryDelegationDenial = resolveScopedMemoryDelegationDenial({
+    requesterAgentId,
+    targetAgentId,
+  });
+  if (memoryDelegationDenial) {
+    return rejectSubagentSpawnRequest("forbidden", memoryDelegationDenial);
+  }
   const configuredAgentIds = listAgentIds(cfg);
   const explicitSwarmGroupId = normalizeOptionalString(params.groupId);
   const requesterRunId = normalizeOptionalString(ctx.requesterRunId);

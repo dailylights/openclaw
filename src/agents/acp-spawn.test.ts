@@ -91,6 +91,7 @@ const hoisted = vi.hoisted(() => {
   const listTasksForOwnerKeyMock = vi.fn();
   const upsertSessionEntryMock = vi.fn();
   const readCurrentSessionMemorySubjectMock = vi.fn();
+  const resolveScopedMemoryDelegationDenialMock = vi.fn();
   const createSessionAccessorMock = () => {
     const resolveMockStorePath = (scope: {
       agentId?: string;
@@ -189,6 +190,7 @@ const hoisted = vi.hoisted(() => {
     listTasksForOwnerKeyMock,
     upsertSessionEntryMock,
     readCurrentSessionMemorySubjectMock,
+    resolveScopedMemoryDelegationDenialMock,
     createSessionAccessorMock,
     state,
   };
@@ -260,6 +262,11 @@ vi.mock("./subagent-registry.js", async (importOriginal) => ({
   getSubagentRunByChildSessionKey: hoisted.getSubagentRunByChildSessionKeyMock,
   // ACP registration deliberately moved behind the shared spawn pipeline.
   registerSubagentRun: hoisted.registerSubagentRunMock,
+}));
+
+vi.mock("./scoped-memory-delegation.js", () => ({
+  resolveScopedMemoryDelegationDenial: (...args: unknown[]) =>
+    hoisted.resolveScopedMemoryDelegationDenialMock(...args),
 }));
 
 vi.mock("../tasks/runtime-internal.js", async (importOriginal) => ({
@@ -790,6 +797,7 @@ describe("spawnAcpDirect", () => {
         updatedAt: patch.updatedAt ?? Date.now(),
       }));
     hoisted.readCurrentSessionMemorySubjectMock.mockReset().mockReturnValue(undefined);
+    hoisted.resolveScopedMemoryDelegationDenialMock.mockReset().mockReturnValue(undefined);
 
     hoisted.callGatewayMock.mockReset();
     hoisted.callGatewayMock.mockImplementation(async (argsUnknown: unknown) => {
@@ -942,6 +950,22 @@ describe("spawnAcpDirect", () => {
       sessionKey: "agent:main:telegram:direct:6098642967",
       storePath: "/tmp/codex-sessions.json",
     });
+  });
+
+  it("denies cutover delegation before it resolves or creates a child session", async () => {
+    hoisted.resolveScopedMemoryDelegationDenialMock.mockReturnValue(
+      "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.",
+    );
+
+    await expect(spawnAcpDirect(createSpawnRequest(), createRequesterContext())).resolves.toEqual({
+      status: "forbidden",
+      errorCode: "subagent_policy",
+      error:
+        "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.",
+    });
+    expect(hoisted.readCurrentSessionMemorySubjectMock).not.toHaveBeenCalled();
+    expect(hoisted.upsertSessionEntryMock).not.toHaveBeenCalled();
+    expect(hoisted.initializeSessionMock).not.toHaveBeenCalled();
   });
 
   it("spawns ACP session, binds a new thread, and dispatches initial task", async () => {
