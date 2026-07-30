@@ -16,6 +16,7 @@ import {
   getNodeSqliteKysely,
 } from "openclaw/plugin-sdk/sqlite-runtime";
 import type {
+  MemoryRevisionPolicyRequirementRow,
   MemoryPolicyEntryRow,
   MemoryStoreRow,
   ScopedMemoryDatabase,
@@ -103,6 +104,13 @@ export type ScopedMemoryAuthorizedRevisionSnapshot = ScopedMemoryRevisionAuthori
     }>;
   }>;
 
+export type ScopedMemoryRevisionPolicyRequirement = Readonly<{
+  stablePolicyId: string;
+  capturedRevisionId: string;
+  expectedActiveRevisionId: string;
+  expectedRevocationEpoch: number;
+}>;
+
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -181,6 +189,64 @@ function listPolicyEntries(
       .where("policy_revision_id", "=", policyRevisionId)
       .orderBy("entry_id"),
   ).rows;
+}
+
+export function readScopedMemoryRevisionPolicyRequirements(params: {
+  database: DatabaseSync;
+  revisionId: string;
+}): ScopedMemoryRevisionPolicyRequirement[] {
+  const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+  return executeSqliteQuerySync(
+    params.database,
+    db
+      .selectFrom("memory_revision_policy_requirements")
+      .selectAll()
+      .where("revision_id", "=", params.revisionId)
+      .orderBy("stable_policy_id"),
+  ).rows.map((row: MemoryRevisionPolicyRequirementRow) => ({
+    stablePolicyId: row.stable_policy_id,
+    capturedRevisionId: row.captured_revision_id,
+    expectedActiveRevisionId: row.expected_active_revision_id,
+    expectedRevocationEpoch: row.expected_revocation_epoch,
+  }));
+}
+
+function revisionPolicyRequirementsAreCurrent(params: {
+  database: DatabaseSync;
+  revisionId: string;
+}): boolean {
+  const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+  const rows = executeSqliteQuerySync(
+    params.database,
+    db
+      .selectFrom("memory_revision_policy_requirements as requirement")
+      .innerJoin("memory_policies as policy", "policy.policy_id", "requirement.stable_policy_id")
+      .innerJoin(
+        "memory_policy_revisions as expected_revision",
+        "expected_revision.revision_id",
+        "requirement.expected_active_revision_id",
+      )
+      .select([
+        "requirement.expected_active_revision_id",
+        "requirement.expected_revocation_epoch",
+        "policy.current_revision_id",
+        "policy.revocation_epoch",
+        "policy.lifecycle_state as policy_lifecycle_state",
+        "expected_revision.lifecycle_state as expected_revision_lifecycle_state",
+      ])
+      .where("requirement.revision_id", "=", params.revisionId)
+      .orderBy("requirement.stable_policy_id"),
+  ).rows;
+  return (
+    rows.length > 0 &&
+    rows.every(
+      (row) =>
+        row.policy_lifecycle_state === "active" &&
+        row.expected_revision_lifecycle_state === "active" &&
+        row.current_revision_id === row.expected_active_revision_id &&
+        row.revocation_epoch === row.expected_revocation_epoch,
+    )
+  );
 }
 
 export function resolveScopedMemoryAuthorizedStores(params: {
@@ -466,9 +532,12 @@ export function readScopedMemoryRevisionAuthorization(params: {
     row.current_policy_revocation_epoch !== mount.policyRevocationEpoch ||
     row.policy_revision_id !== mount.policyRevisionId ||
     row.policy_revocation_epoch !== mount.policyRevocationEpoch ||
-    row.source_policy_set_id !== createScopedMemorySourcePolicySetId(mount.policyRevisionId) ||
+    !row.source_policy_set_id.trim() ||
     (row.expires_at !== null && row.expires_at <= params.nowMs)
   ) {
+    return undefined;
+  }
+  if (!revisionPolicyRequirementsAreCurrent(params)) {
     return undefined;
   }
   const store: MemoryStoreRow = {

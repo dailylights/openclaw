@@ -260,6 +260,13 @@ export interface MemoryIndexState {
   revision: number;
 }
 
+export interface MemoryLineageEdges {
+  child_revision_id: string;
+  created_at: number;
+  edge_kind: string;
+  parent_revision_id: string;
+}
+
 export interface MemoryMigrations {
   classification_json: string;
   cutover_at: number | null;
@@ -369,6 +376,15 @@ export interface MemoryResources {
   resource_id: string;
   source: Generated<string>;
   store_id: string;
+}
+
+export interface MemoryRevisionPolicyRequirements {
+  captured_revision_id: string;
+  created_at: number;
+  expected_active_revision_id: string;
+  expected_revocation_epoch: number;
+  revision_id: string;
+  stable_policy_id: string;
 }
 
 export interface MemoryRunExposures {
@@ -863,6 +879,7 @@ export interface DB {
   memory_index_meta: MemoryIndexMeta;
   memory_index_sources: MemoryIndexSources;
   memory_index_state: MemoryIndexState;
+  memory_lineage_edges: MemoryLineageEdges;
   memory_migrations: MemoryMigrations;
   memory_policies: MemoryPolicies;
   memory_policy_entries: MemoryPolicyEntries;
@@ -873,6 +890,7 @@ export interface DB {
   memory_resource_revisions: MemoryResourceRevisions;
   memory_resource_subjects: MemoryResourceSubjects;
   memory_resources: MemoryResources;
+  memory_revision_policy_requirements: MemoryRevisionPolicyRequirements;
   memory_run_exposures: MemoryRunExposures;
   memory_scoped_chunk_vectors: MemoryScopedChunkVectors;
   memory_scoped_chunks: MemoryScopedChunks;

@@ -38,11 +38,13 @@ import {
   equalScopedMemoryAuthorizedPlan,
   equalScopedMemoryResourceHandle,
   readScopedMemoryAuthorizedRevisionSnapshot,
+  readScopedMemoryRevisionPolicyRequirements,
   readScopedMemoryRevisionAuthorization,
   resolveScopedMemoryAuthorizedStores,
   type ScopedMemoryAuthorizedRevisionSnapshot,
   type ScopedMemoryMountRecord,
   type ScopedMemoryPlanRecord,
+  type ScopedMemoryRevisionPolicyRequirement,
   type ScopedMemoryRevisionAuthorization,
 } from "./scoped-memory-authorization.js";
 import {
@@ -145,6 +147,29 @@ function allocateOpaqueId(params: {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+type MemoryLineageEdgeKind = "revision" | "derive" | "project" | "publish";
+
+function mergeRevisionPolicyRequirements(
+  requirements: readonly ScopedMemoryRevisionPolicyRequirement[],
+): ScopedMemoryRevisionPolicyRequirement[] {
+  const byPolicyId = new Map<string, ScopedMemoryRevisionPolicyRequirement>();
+  for (const requirement of requirements) {
+    const existing = byPolicyId.get(requirement.stablePolicyId);
+    if (
+      existing &&
+      (existing.capturedRevisionId !== requirement.capturedRevisionId ||
+        existing.expectedActiveRevisionId !== requirement.expectedActiveRevisionId ||
+        existing.expectedRevocationEpoch !== requirement.expectedRevocationEpoch)
+    ) {
+      throw new Error("authorized memory mutation source policy is unavailable");
+    }
+    byPolicyId.set(requirement.stablePolicyId, requirement);
+  }
+  return [...byPolicyId.values()].toSorted((left, right) =>
+    compareText(left.stablePolicyId, right.stablePolicyId),
+  );
 }
 
 function audienceKey(audience: AudienceRef): string {
@@ -1310,6 +1335,56 @@ export function createBuiltinScopedMemoryRuntime(
     drainAuditOutbox(agentId);
   };
 
+  /** Tombstone every catalog descendant before a source artifact can disappear. */
+  const tombstoneRevisionLineage = (params: {
+    database: DatabaseSync;
+    revisionId: string;
+    nowMs: number;
+  }): readonly string[] => {
+    const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+    const descendantIds = new Set([params.revisionId]);
+    let frontier = [params.revisionId];
+    while (frontier.length > 0) {
+      const children = executeSqliteQuerySync(
+        params.database,
+        db
+          .selectFrom("memory_lineage_edges")
+          .select("child_revision_id")
+          .where("parent_revision_id", "in", frontier)
+          .orderBy("child_revision_id"),
+      ).rows;
+      frontier = children.flatMap((child) => {
+        if (descendantIds.has(child.child_revision_id)) {
+          return [];
+        }
+        descendantIds.add(child.child_revision_id);
+        return [child.child_revision_id];
+      });
+    }
+    const invalidatedIds = [...descendantIds];
+    executeSqliteQuerySync(
+      params.database,
+      db.deleteFrom("memory_scoped_chunks").where("revision_id", "in", invalidatedIds),
+    );
+    executeSqliteQuerySync(
+      params.database,
+      db
+        .updateTable("memory_resource_revisions")
+        .set({ lifecycle_state: "tombstoned", retired_at: params.nowMs })
+        .where("revision_id", "in", invalidatedIds)
+        .where("lifecycle_state", "in", ["pending", "active", "quarantined"]),
+    );
+    executeSqliteQuerySync(
+      params.database,
+      db
+        .updateTable("memory_write_intents")
+        .set({ state: "quarantined", updated_at: params.nowMs })
+        .where("pending_revision_id", "in", invalidatedIds)
+        .where("state", "in", ["pending", "renamed"]),
+    );
+    return Object.freeze(invalidatedIds);
+  };
+
   const writeAuthorized = async (params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;
@@ -1389,18 +1464,11 @@ export function createBuiltinScopedMemoryRuntime(
               throw new Error("authorized memory revision is unavailable");
             }
             const db = getNodeSqliteKysely<ScopedMemoryDatabase>(database);
-            executeSqliteQuerySync(
+            tombstoneRevisionLineage({
               database,
-              db.deleteFrom("memory_scoped_chunks").where("revision_id", "=", target.revisionId),
-            );
-            executeSqliteQuerySync(
-              database,
-              db
-                .updateTable("memory_resource_revisions")
-                .set({ lifecycle_state: "tombstoned", retired_at: nowMs })
-                .where("resource_id", "=", target.resourceId)
-                .where("lifecycle_state", "=", "active"),
-            );
+              revisionId: target.revisionId,
+              nowMs,
+            });
             executeSqliteQuerySync(
               database,
               db.insertInto("memory_write_intents").values({
@@ -1482,6 +1550,16 @@ export function createBuiltinScopedMemoryRuntime(
         let logicalLocator = `memory/${resourceId}.md`;
         let content = params.mutation.content;
         let retiredArtifactPath: string | undefined;
+        let sourceSnapshots: ScopedMemoryRevisionAuthorization[] = [];
+        let lineageEdgeKind: MemoryLineageEdgeKind | undefined;
+        let policyRequirements: ScopedMemoryRevisionPolicyRequirement[] = [
+          {
+            stablePolicyId: mount.policyId,
+            capturedRevisionId: mount.policyRevisionId,
+            expectedActiveRevisionId: mount.policyRevisionId,
+            expectedRevocationEpoch: mount.policyRevocationEpoch,
+          },
+        ];
         if (params.mutation.kind === "append" || params.mutation.kind === "replace") {
           const target = assertMutationHandle({
             database,
@@ -1531,13 +1609,15 @@ export function createBuiltinScopedMemoryRuntime(
             pathKey: target.pathKey,
             artifactLocator: target.artifactLocator,
           });
+          sourceSnapshots = [target];
+          lineageEdgeKind = "revision";
         }
         if (
           params.mutation.kind === "derive" ||
           params.mutation.kind === "project" ||
           params.mutation.kind === "publish"
         ) {
-          const sourceSnapshots = params.mutation.sourceHandles.map((handle) =>
+          sourceSnapshots = params.mutation.sourceHandles.map((handle) =>
             assertMutationHandle({
               database,
               context: params.context,
@@ -1558,6 +1638,20 @@ export function createBuiltinScopedMemoryRuntime(
                 sourceSnapshots.map((source) => source.sourcePolicySetId),
               )
           ) {
+            throw new Error("authorized memory mutation source policy is unavailable");
+          }
+          lineageEdgeKind = params.mutation.kind;
+        }
+        if (sourceSnapshots.length > 0) {
+          policyRequirements = mergeRevisionPolicyRequirements(
+            sourceSnapshots.flatMap((source) =>
+              readScopedMemoryRevisionPolicyRequirements({
+                database,
+                revisionId: source.revisionId,
+              }),
+            ),
+          );
+          if (policyRequirements.length === 0) {
             throw new Error("authorized memory mutation source policy is unavailable");
           }
         }
@@ -1606,6 +1700,51 @@ export function createBuiltinScopedMemoryRuntime(
           if (currentRoot.pathKey !== root.pathKey) {
             throw new Error("authorized memory storage root changed during write");
           }
+          const currentSourceSnapshots = sourceSnapshots.map((source) => {
+            const current = readScopedMemoryRevisionAuthorization({
+              database,
+              context: params.context,
+              planRecord: currentPlan,
+              revisionId: source.revisionId,
+              nowMs,
+            });
+            if (
+              !current ||
+              current.contentHash !== source.contentHash ||
+              current.artifactLocator !== source.artifactLocator ||
+              current.sourcePolicySetId !== source.sourcePolicySetId
+            ) {
+              throw new Error("authorized memory revision is unavailable");
+            }
+            return current;
+          });
+          const currentSourcePolicySetId =
+            currentSourceSnapshots.length === 0
+              ? createScopedMemorySourcePolicySetId(mount.policyRevisionId)
+              : createScopedMemoryAggregateRevision(
+                  "mpset1",
+                  currentSourceSnapshots.map((source) => source.sourcePolicySetId),
+                );
+          if (
+            params.mutation.kind === "derive" &&
+            params.mutation.sourcePolicySetId !== currentSourcePolicySetId
+          ) {
+            throw new Error("authorized memory mutation source policy is unavailable");
+          }
+          const currentPolicyRequirements =
+            currentSourceSnapshots.length === 0
+              ? policyRequirements
+              : mergeRevisionPolicyRequirements(
+                  currentSourceSnapshots.flatMap((source) =>
+                    readScopedMemoryRevisionPolicyRequirements({
+                      database,
+                      revisionId: source.revisionId,
+                    }),
+                  ),
+                );
+          if (currentPolicyRequirements.length === 0) {
+            throw new Error("authorized memory mutation source policy is unavailable");
+          }
           const db = getNodeSqliteKysely<ScopedMemoryDatabase>(database);
           if (revisionNumber === 1) {
             executeSqliteQuerySync(
@@ -1631,7 +1770,7 @@ export function createBuiltinScopedMemoryRuntime(
               content_bytes: contentBytes,
               policy_revision_id: mount.policyRevisionId,
               policy_revocation_epoch: mount.policyRevocationEpoch,
-              source_policy_set_id: createScopedMemorySourcePolicySetId(mount.policyRevisionId),
+              source_policy_set_id: currentSourcePolicySetId,
               lifecycle_state: "pending",
               actor_kind: actor.kind,
               actor_id: actor.id,
@@ -1641,6 +1780,34 @@ export function createBuiltinScopedMemoryRuntime(
               retired_at: null,
             }),
           );
+          executeSqliteQuerySync(
+            database,
+            db.insertInto("memory_revision_policy_requirements").values(
+              currentPolicyRequirements.map((requirement) => ({
+                revision_id: revisionId,
+                stable_policy_id: requirement.stablePolicyId,
+                captured_revision_id: requirement.capturedRevisionId,
+                expected_active_revision_id: requirement.expectedActiveRevisionId,
+                expected_revocation_epoch: requirement.expectedRevocationEpoch,
+                created_at: nowMs,
+              })),
+            ),
+          );
+          if (lineageEdgeKind) {
+            executeSqliteQuerySync(
+              database,
+              db.insertInto("memory_lineage_edges").values(
+                [...new Set(currentSourceSnapshots.map((source) => source.revisionId))]
+                  .toSorted(compareText)
+                  .map((parentRevisionId) => ({
+                    child_revision_id: revisionId,
+                    parent_revision_id: parentRevisionId,
+                    edge_kind: lineageEdgeKind,
+                    created_at: nowMs,
+                  })),
+              ),
+            );
+          }
           executeSqliteQuerySync(
             database,
             db.insertInto("memory_write_intents").values({

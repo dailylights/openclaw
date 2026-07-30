@@ -547,6 +547,106 @@ describe("builtin authorized scoped memory runtime", () => {
     ).rejects.toThrow("revision is unavailable");
   });
 
+  it("preserves source policy requirements and tombstones every derived descendant", async () => {
+    const store = createStore({
+      defaultCapabilities: ["retrieve", "read", "append", "derive", "delete"],
+    });
+    const source = createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store,
+      logicalLocator: "source.md",
+      content: "source cobalt lineage",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 2_000,
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const readContext = createContext({ operation: "read" });
+    const readPlan = await runtime.authorize(readContext);
+    const sourceSearch = await runtime.searchAuthorized({
+      context: readContext,
+      plan: readPlan,
+      query: "cobalt",
+      limit: 1,
+    });
+    const sourceHandle = sourceSearch.value[0]?.resourceHandle;
+    if (!sourceHandle) {
+      throw new Error("expected source handle");
+    }
+    const deriveContext = createContext({ operation: "derive" });
+    const derivePlan = await runtime.authorize(deriveContext);
+    const derived = await runtime.writeAuthorized({
+      context: deriveContext,
+      plan: derivePlan,
+      mutation: {
+        version: 1,
+        kind: "derive",
+        mutationId: "mutation-derived-lineage",
+        idempotencyKey: "derived-lineage-key",
+        content: "derived cobalt lineage",
+        contentType: "markdown",
+        sourceHandles: [sourceHandle],
+        sourcePolicySetId: sourceSearch.exposureReceipt.sourcePolicySetId,
+      },
+    });
+    const derivedHandle = derived.resourceHandle;
+    if (!derivedHandle) {
+      throw new Error("expected derived handle");
+    }
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(
+      database
+        .prepare(
+          "SELECT parent_revision_id, edge_kind FROM memory_lineage_edges WHERE child_revision_id = ?",
+        )
+        .all(derivedHandle.resourceRevision),
+    ).toEqual([{ parent_revision_id: source.revisionId, edge_kind: "derive" }]);
+    expect(
+      database
+        .prepare(
+          `SELECT stable_policy_id, captured_revision_id, expected_active_revision_id,
+                  expected_revocation_epoch
+             FROM memory_revision_policy_requirements
+            WHERE revision_id = ?`,
+        )
+        .all(derivedHandle.resourceRevision),
+    ).toEqual([
+      {
+        stable_policy_id: store.policyId,
+        captured_revision_id: store.policyRevisionId,
+        expected_active_revision_id: store.policyRevisionId,
+        expected_revocation_epoch: store.policyRevocationEpoch,
+      },
+    ]);
+
+    const deleteContext = createContext({ operation: "delete" });
+    const deletePlan = await runtime.authorize(deleteContext);
+    await runtime.writeAuthorized({
+      context: deleteContext,
+      plan: deletePlan,
+      mutation: {
+        version: 1,
+        kind: "tombstone",
+        mutationId: "mutation-tombstone-lineage",
+        idempotencyKey: "tombstone-lineage-key",
+        target: sourceHandle,
+      },
+    });
+
+    expect(
+      database
+        .prepare("SELECT lifecycle_state FROM memory_resource_revisions WHERE revision_id = ?")
+        .get(derivedHandle.resourceRevision),
+    ).toEqual({ lifecycle_state: "tombstoned" });
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM memory_scoped_chunks WHERE revision_id = ?")
+        .get(derivedHandle.resourceRevision),
+    ).toEqual({ count: 0 });
+    await expect(
+      runtime.readAuthorized({ context: readContext, plan: readPlan, handle: derivedHandle }),
+    ).rejects.toThrow("revision is unavailable");
+  });
+
   it("authorizes import, export, sync, and status without caller-selected stores", async () => {
     createStore({
       defaultCapabilities: ["retrieve", "read", "append", "import", "export", "sync", "status"],

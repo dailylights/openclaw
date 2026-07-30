@@ -122,6 +122,22 @@ type MemoryResourceRevisionRow = {
   retired_at: number | null;
 };
 
+export type MemoryRevisionPolicyRequirementRow = {
+  revision_id: string;
+  stable_policy_id: string;
+  captured_revision_id: string;
+  expected_active_revision_id: string;
+  expected_revocation_epoch: number;
+  created_at: number;
+};
+
+export type MemoryLineageEdgeRow = {
+  child_revision_id: string;
+  parent_revision_id: string;
+  edge_kind: "revision" | "derive" | "project" | "publish";
+  created_at: number;
+};
+
 type MemoryResourceSubjectRow = {
   revision_id: string;
   subject_kind: "person" | "project" | "conversation" | "topic";
@@ -241,6 +257,8 @@ export type ScopedMemoryDatabase = {
   memory_policy_entries: MemoryPolicyEntryRow;
   memory_resources: MemoryResourceRow;
   memory_resource_revisions: MemoryResourceRevisionRow;
+  memory_revision_policy_requirements: MemoryRevisionPolicyRequirementRow;
+  memory_lineage_edges: MemoryLineageEdgeRow;
   memory_resource_subjects: MemoryResourceSubjectRow;
   memory_scoped_chunks: MemoryScopedChunkRow;
   memory_scoped_chunk_vectors: MemoryScopedChunkVectorRow;

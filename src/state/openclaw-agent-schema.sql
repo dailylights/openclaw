@@ -778,6 +778,66 @@ BEGIN
   SELECT RAISE(ABORT, 'tombstoned memory resource revisions cannot be reactivated');
 END;
 
+-- Each revision carries every stable policy that authorized its source. This
+-- makes a later source-policy revocation deny derived content without relying
+-- on a mutable current-store label.
+CREATE TABLE IF NOT EXISTS memory_revision_policy_requirements (
+  revision_id TEXT NOT NULL,
+  stable_policy_id TEXT NOT NULL,
+  captured_revision_id TEXT NOT NULL,
+  expected_active_revision_id TEXT NOT NULL,
+  expected_revocation_epoch INTEGER NOT NULL CHECK (expected_revocation_epoch >= 0),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (revision_id, stable_policy_id),
+  FOREIGN KEY (revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (stable_policy_id) REFERENCES memory_policies(policy_id) ON DELETE RESTRICT,
+  FOREIGN KEY (captured_revision_id) REFERENCES memory_policy_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (expected_active_revision_id) REFERENCES memory_policy_revisions(revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_revision_policy_requirements_policy
+  ON memory_revision_policy_requirements(stable_policy_id, expected_active_revision_id, revision_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_revision_policy_requirements_no_update
+BEFORE UPDATE ON memory_revision_policy_requirements
+BEGIN
+  SELECT RAISE(ABORT, 'memory revision policy requirements are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_revision_policy_requirements_no_delete
+BEFORE DELETE ON memory_revision_policy_requirements
+BEGIN
+  SELECT RAISE(ABORT, 'memory revision policy requirements cannot be deleted');
+END;
+
+-- A child is not independently readable when any immutable source revision
+-- was revoked or tombstoned. Edges are append-only evidence, never a cache.
+CREATE TABLE IF NOT EXISTS memory_lineage_edges (
+  child_revision_id TEXT NOT NULL,
+  parent_revision_id TEXT NOT NULL,
+  edge_kind TEXT NOT NULL CHECK (edge_kind IN ('revision', 'derive', 'project', 'publish')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (child_revision_id, parent_revision_id),
+  CHECK (child_revision_id <> parent_revision_id),
+  FOREIGN KEY (child_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (parent_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_lineage_edges_parent
+  ON memory_lineage_edges(parent_revision_id, child_revision_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_lineage_edges_no_update
+BEFORE UPDATE ON memory_lineage_edges
+BEGIN
+  SELECT RAISE(ABORT, 'memory lineage edges are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_lineage_edges_no_delete
+BEFORE DELETE ON memory_lineage_edges
+BEGIN
+  SELECT RAISE(ABORT, 'memory lineage edges cannot be deleted');
+END;
+
 CREATE TABLE IF NOT EXISTS memory_resource_subjects (
   revision_id TEXT NOT NULL,
   subject_kind TEXT NOT NULL CHECK (subject_kind IN ('person', 'project', 'conversation', 'topic')),

@@ -289,6 +289,17 @@ export function createBuiltinScopedMemoryResource(params: {
             retired_at: lifecycleState === "tombstoned" ? nowMs : null,
           }),
         );
+        executeSqliteQuerySync(
+          database,
+          db.insertInto("memory_revision_policy_requirements").values({
+            revision_id: revisionId,
+            stable_policy_id: params.store.policyId,
+            captured_revision_id: params.store.policyRevisionId,
+            expected_active_revision_id: params.store.policyRevisionId,
+            expected_revocation_epoch: params.store.policyRevocationEpoch,
+            created_at: nowMs,
+          }),
+        );
         const subjects = (params.subjects ?? []).map((subject) => ({
           revision_id: revisionId,
           subject_kind: subject.kind,
@@ -474,7 +485,7 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
           database,
           db
             .selectFrom("memory_resource_revisions")
-            .select("revision_number")
+            .select(["revision_id", "revision_number", "source_policy_set_id"])
             .where("resource_id", "=", resourceId)
             .orderBy("revision_number", "desc")
             .limit(1),
@@ -482,6 +493,18 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
         if (!previous) {
           throw new Error("scoped-memory resource has no revision history");
         }
+        const inheritedRequirements = executeSqliteQuerySync(
+          database,
+          db
+            .selectFrom("memory_revision_policy_requirements")
+            .selectAll()
+            .where("revision_id", "=", previous.revision_id)
+            .orderBy("stable_policy_id"),
+        ).rows;
+        if (inheritedRequirements.length === 0) {
+          throw new Error("scoped-memory resource lineage is unavailable");
+        }
+        committedSourcePolicySetId = `mpset1_${hashText(previous.source_policy_set_id)}`;
         if (lifecycleState === "active") {
           executeSqliteQuerySync(
             database,
@@ -511,6 +534,28 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
             created_at: nowMs,
             activated_at: lifecycleState === "active" ? nowMs : null,
             retired_at: lifecycleState === "tombstoned" ? nowMs : null,
+          }),
+        );
+        executeSqliteQuerySync(
+          database,
+          db.insertInto("memory_revision_policy_requirements").values(
+            inheritedRequirements.map((requirement) => ({
+              revision_id: revisionId,
+              stable_policy_id: requirement.stable_policy_id,
+              captured_revision_id: requirement.captured_revision_id,
+              expected_active_revision_id: requirement.expected_active_revision_id,
+              expected_revocation_epoch: requirement.expected_revocation_epoch,
+              created_at: nowMs,
+            })),
+          ),
+        );
+        executeSqliteQuerySync(
+          database,
+          db.insertInto("memory_lineage_edges").values({
+            child_revision_id: revisionId,
+            parent_revision_id: previous.revision_id,
+            edge_kind: "revision",
+            created_at: nowMs,
           }),
         );
         const subjects = (params.subjects ?? []).map((subject) => ({
