@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../workspace-bootstrap-read.js";
-import { DEFAULT_AGENTS_FILENAME, DEFAULT_SOUL_FILENAME } from "../workspace.js";
+import {
+  DEFAULT_AGENTS_FILENAME,
+  DEFAULT_MEMORY_FILENAME,
+  DEFAULT_SOUL_FILENAME,
+  DEFAULT_USER_FILENAME,
+} from "../workspace.js";
 import { ensureSandboxWorkspace } from "./workspace.js";
 
 const tempRoots: string[] = [];
@@ -23,6 +28,27 @@ afterEach(async () => {
 });
 
 describe("ensureSandboxWorkspace", () => {
+  it("removes controlled memory artifacts and does not reseed USER.md for an enforced view", async () => {
+    const root = await makeTempRoot();
+    const seed = path.join(root, "seed");
+    const sandbox = path.join(root, "sandbox");
+    await fs.mkdir(path.join(seed, "memory"), { recursive: true });
+    await fs.mkdir(path.join(sandbox, "memory"), { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(seed, DEFAULT_USER_FILENAME), "seeded user", "utf-8"),
+      fs.writeFile(path.join(seed, DEFAULT_MEMORY_FILENAME), "seeded memory", "utf-8"),
+      fs.writeFile(path.join(sandbox, DEFAULT_USER_FILENAME), "old user", "utf-8"),
+      fs.writeFile(path.join(sandbox, DEFAULT_MEMORY_FILENAME), "old memory", "utf-8"),
+      fs.writeFile(path.join(sandbox, "memory", "old.md"), "old artifact", "utf-8"),
+    ]);
+
+    await ensureSandboxWorkspace(sandbox, seed, false, undefined, true);
+
+    await expect(fs.access(path.join(sandbox, DEFAULT_USER_FILENAME))).rejects.toThrow();
+    await expect(fs.access(path.join(sandbox, DEFAULT_MEMORY_FILENAME))).rejects.toThrow();
+    await expect(fs.access(path.join(sandbox, "memory"))).rejects.toThrow();
+  });
+
   it("seeds regular bootstrap files from the source workspace", async () => {
     const root = await makeTempRoot();
     const seed = path.join(root, "seed");

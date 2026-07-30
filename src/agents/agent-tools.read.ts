@@ -1036,6 +1036,76 @@ export function wrapReadToolWithSkillContent(
   };
 }
 
+type MemoryVirtualReadResult = Readonly<{
+  path?: string;
+  text?: string;
+  truncated?: boolean;
+  nextFrom?: number;
+  unavailable?: boolean;
+}>;
+
+/**
+ * Routes reserved memory paths through a request-scoped broker before ordinary
+ * workspace guards run. The broker owns opaque handles; file tools never see a
+ * controlled artifact path or a store root.
+ */
+export function wrapReadToolWithMemoryVirtualFilesystem(
+  tool: AnyAgentTool,
+  options: {
+    resolveVirtualPath: (pathname: string) => string | undefined;
+    isControlledWorkspacePath: (pathname: string) => boolean | Promise<boolean>;
+    readVirtualPath: (params: {
+      path: string;
+      offset?: number;
+      limit?: number;
+    }) => Promise<MemoryVirtualReadResult>;
+  },
+): AnyAgentTool {
+  return {
+    ...tool,
+    execute: async (toolCallId, args, signal, onUpdate) => {
+      const record = getToolParamsRecord(args);
+      const rawPath = record?.path;
+      const normalizedPath =
+        typeof rawPath === "string" ? normalizeFileToolPathParam(rawPath) : undefined;
+      if (!normalizedPath) {
+        return await tool.execute(toolCallId, args, signal, onUpdate);
+      }
+      const virtualPath = options.resolveVirtualPath(normalizedPath);
+      if (virtualPath) {
+        const offset = record?.offset;
+        if (
+          offset !== undefined &&
+          (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 1)
+        ) {
+          throw new Error("offset must be a positive integer");
+        }
+        const limit = record?.limit;
+        const result = await options.readVirtualPath({
+          path: virtualPath,
+          ...(typeof offset === "number" ? { offset } : {}),
+          ...(typeof limit === "number" && Number.isFinite(limit) ? { limit } : {}),
+        });
+        if (result.unavailable || typeof result.text !== "string") {
+          throw new Error("Memory virtual path is unavailable.");
+        }
+        const continuation =
+          result.truncated && typeof result.nextFrom === "number"
+            ? `\n\n[More lines are available. Use offset=${result.nextFrom} to continue.]`
+            : "";
+        return {
+          content: [{ type: "text", text: `${result.text}${continuation}` }],
+          details: { path: virtualPath },
+        } as never;
+      }
+      if (await options.isControlledWorkspacePath(normalizedPath)) {
+        throw new Error("Raw controlled-memory paths are unavailable.");
+      }
+      return await tool.execute(toolCallId, args, signal, onUpdate);
+    },
+  };
+}
+
 function createSandboxReadOperations(params: SandboxToolParams) {
   return {
     resolvePath: (filePath: string) => {

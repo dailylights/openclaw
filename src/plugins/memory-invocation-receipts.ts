@@ -51,15 +51,35 @@ export type TranscriptMemoryRunExposureSnapshot = Readonly<{
   createdAt: number;
 }>;
 
+export type MemoryVirtualFilesystemRoot = Readonly<{
+  virtualRoot: "private" | "channel" | "shared" | "projections" | "postbox-review";
+  mountHandle: string;
+  sourcePath: string;
+}>;
+
+/** Ephemeral, model-visible view. The source path is never a controlled artifact root. */
+export type MemoryVirtualFilesystemView = Readonly<{
+  viewId: string;
+  rootDir: string;
+  roots: readonly MemoryVirtualFilesystemRoot[];
+}>;
+
 export type MemoryInvocationState = {
   agentId: string;
   sessionId: string;
   sessionKey: string;
   runId: string;
+  deliveryInput?: Readonly<{
+    messageChannel?: string;
+    agentAccountId?: string;
+    messageTo?: string;
+    messageThreadId?: string | number;
+  }>;
   context?: MemoryAccessContext;
   plan?: AuthorizedMemoryPlan;
   runtime?: AdmittedAuthorizedMemoryReadRuntime;
   runExposure?: TranscriptMemoryRunExposureSnapshot;
+  virtualFilesystem?: MemoryVirtualFilesystemView;
   initialization: "created" | "initializing" | "ready" | "unavailable";
   displayHandles: MemoryDisplayHandleRegistry;
   mergeTail: Promise<void>;
@@ -303,4 +323,90 @@ export async function mergeMemoryInvocationEnvelope<T>(params: {
   } finally {
     release();
   }
+}
+
+/** Re-check persisted egress receipts immediately before an outbound delivery. */
+export function hasCurrentMemoryEgressReceipts(state: MemoryInvocationState): boolean {
+  const context = state.context;
+  const plan = state.plan;
+  const exposure = state.runExposure;
+  if (!context || !plan || !exposure) {
+    return false;
+  }
+  const resourceRevisions = parseCanonicalMemoryStringArray(exposure.exposedResourceRevisionsJson);
+  const receiptIds = parseCanonicalMemoryStringArray(exposure.egressReceiptIdsJson);
+  const sourcePolicySetIds = parseCanonicalMemoryStringArray(exposure.sourcePolicySetIdsJson);
+  if (!resourceRevisions || !receiptIds || !sourcePolicySetIds) {
+    return false;
+  }
+  if (resourceRevisions.length === 0) {
+    return true;
+  }
+  if (receiptIds.length === 0) {
+    return false;
+  }
+  const database = openOpenClawAgentDatabase({ agentId: state.agentId });
+  ensureOpenClawAgentScopedMemorySchema(database.db);
+  const kysely = getNodeSqliteKysely<MemoryInvocationDatabase>(database.db);
+  const nowMs = Date.now();
+  const coveredResourceRevisions: string[] = [];
+  const coveredPolicySetIds: string[] = [];
+  const receiptsAreCurrent = receiptIds.every((receiptId) => {
+    const row = executeSqliteQueryTakeFirstSync(
+      database.db,
+      kysely.selectFrom("memory_egress_receipts").selectAll().where("receipt_id", "=", receiptId),
+    );
+    const exposureRow = row
+      ? executeSqliteQueryTakeFirstSync(
+          database.db,
+          kysely
+            .selectFrom("memory_exposure_receipts")
+            .selectAll()
+            .where("receipt_id", "=", row.exposure_receipt_id),
+        )
+      : undefined;
+    const allowedAudiences = row
+      ? parseCanonicalMemoryAudiences(row.allowed_audiences_json)
+      : undefined;
+    const exposedRevisions = exposureRow
+      ? parseCanonicalMemoryStringArray(exposureRow.exposed_revision_handles_json)
+      : undefined;
+    if (exposedRevisions) {
+      coveredResourceRevisions.push(...exposedRevisions);
+    }
+    if (exposureRow) {
+      coveredPolicySetIds.push(exposureRow.source_policy_set_id);
+    }
+    return Boolean(
+      row &&
+      exposureRow &&
+      allowedAudiences &&
+      exposedRevisions &&
+      row.context_fingerprint === context.contextFingerprint &&
+      row.plan_id === plan.planId &&
+      row.run_id === context.runId &&
+      row.exposure_receipt_id === exposureRow.receipt_id &&
+      row.run_exposure_revision === exposureRow.run_exposure_revision &&
+      row.source_policy_set_id === exposureRow.source_policy_set_id &&
+      exposureRow.context_fingerprint === context.contextFingerprint &&
+      exposureRow.plan_id === plan.planId &&
+      exposureRow.run_id === context.runId &&
+      row.delivery_revision === context.delivery.deliveryRevision &&
+      row.egress_registry_revision === context.delivery.egressRegistryRevision &&
+      row.expires_at > nowMs &&
+      exposureRow.recorded_at <= row.recorded_at &&
+      equalMemoryAudiences(allowedAudiences, plan.allowedEgressAudiences),
+    );
+  });
+  return (
+    receiptsAreCurrent &&
+    equalMemoryStringArrays(
+      sortedUniqueMemoryStrings(coveredResourceRevisions),
+      sortedUniqueMemoryStrings(resourceRevisions),
+    ) &&
+    equalMemoryStringArrays(
+      sortedUniqueMemoryStrings(coveredPolicySetIds),
+      sortedUniqueMemoryStrings(sourcePolicySetIds),
+    )
+  );
 }

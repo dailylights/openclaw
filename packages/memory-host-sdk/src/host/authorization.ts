@@ -233,6 +233,8 @@ export type AuthorizedMemoryMount = DeepReadonly<{
   version: 1;
   agentId: string;
   mountHandle: string;
+  /** Plugin-selected virtual root; never a host storage path. */
+  virtualRoot: "private" | "channel" | "shared" | "projections" | "postbox-review";
   capabilities: readonly MemoryOperation[];
   audienceRevision: string;
 }>;
@@ -252,6 +254,8 @@ export type AuthorizedResourceHandle = DeepReadonly<{
 export type AuthorizedMemorySearchResult = DeepReadonly<
   MemorySearchResult & {
     resourceHandle: AuthorizedResourceHandle;
+    /** Opaque plugin-issued mount that owns this result's virtual path. */
+    mountHandle: string;
   }
 >;
 

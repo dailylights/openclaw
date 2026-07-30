@@ -17,6 +17,13 @@ const memoryAccessContextBrand: unique symbol = Symbol("openclaw.memory-access-c
 const authorizedMemoryPlanBrand: unique symbol = Symbol("openclaw.authorized-memory-plan");
 const trustedMemoryAccessContexts = new WeakSet<object>();
 const trustedAuthorizedMemoryPlans = new WeakSet<object>();
+const MEMORY_VIRTUAL_ROOTS = [
+  "private",
+  "channel",
+  "shared",
+  "projections",
+  "postbox-review",
+] as const;
 
 type MemoryAccessContextFailureCode =
   | "invalid-context"
@@ -602,6 +609,7 @@ export function brandAuthorizedMemoryPlan(params: {
       }
       assertNonEmpty(mount.mountHandle);
       assertNonEmpty(mount.audienceRevision);
+      assertOneOf(mount.virtualRoot, MEMORY_VIRTUAL_ROOTS);
       for (const capability of mount.capabilities) {
         assertOneOf(capability, MEMORY_OPERATIONS);
       }
@@ -609,6 +617,7 @@ export function brandAuthorizedMemoryPlan(params: {
         version: 1 as const,
         agentId: mount.agentId,
         mountHandle: mount.mountHandle,
+        virtualRoot: mount.virtualRoot,
         capabilities: [...new Set(mount.capabilities)].toSorted(compareText),
         audienceRevision: mount.audienceRevision,
       };

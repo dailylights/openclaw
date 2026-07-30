@@ -429,6 +429,19 @@ describe("tool availability", () => {
     expect(toolNames).not.toContain("sessions_send");
     expect(toolNames).not.toContain("subagents");
   });
+
+  it("fails closed when an enforced memory run has no virtual view", () => {
+    const toolNames = createOpenClawCodingTools({ memoryInvocationToken: {} as never }).map(
+      (tool) => tool.name,
+    );
+
+    expect(toolNames).not.toContain("read");
+    expect(toolNames).not.toContain("write");
+    expect(toolNames).not.toContain("edit");
+    expect(toolNames).not.toContain("apply_patch");
+    expect(toolNames).not.toContain("exec");
+    expect(toolNames).not.toContain("process");
+  });
 });
 
 function ringZeroTool(name: string) {

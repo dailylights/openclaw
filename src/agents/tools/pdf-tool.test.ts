@@ -346,7 +346,7 @@ describe("createPdfTool", () => {
             config: cfg,
             agentDir,
             workspaceDir,
-            fsPolicy: { workspaceOnly: true },
+            fsPolicy: { kind: "workspace", workspaceOnly: true },
           }),
         );
 
@@ -387,7 +387,7 @@ describe("createPdfTool", () => {
           (await loadCreatePdfTool())({
             config: cfg,
             agentDir,
-            fsPolicy: { workspaceOnly: true },
+            fsPolicy: { kind: "workspace", workspaceOnly: true },
           }),
         );
 
@@ -478,7 +478,7 @@ describe("createPdfTool", () => {
           (await loadCreatePdfTool())({
             config: cfg,
             agentDir,
-            fsPolicy: { workspaceOnly: true },
+            fsPolicy: { kind: "workspace", workspaceOnly: true },
           }),
         );
 

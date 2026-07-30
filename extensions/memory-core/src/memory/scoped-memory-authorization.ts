@@ -35,6 +35,24 @@ function audienceKey(audience: AudienceRef): string {
   return `${audience.kind}\0${audience.id}`;
 }
 
+function resolveScopedMemoryVirtualRoot(
+  scope: MemoryStoreRow["scope_kind"],
+): "private" | "channel" | "shared" | "projections" | "postbox-review" {
+  switch (scope) {
+    case "user":
+      return "private";
+    case "conversation":
+      return "channel";
+    case "agent-shared":
+    case "agent":
+      return "shared";
+    case "role":
+      return "projections";
+    case "internal":
+      return "postbox-review";
+  }
+}
+
 type AuthorizedStoreDescriptor = Readonly<{
   store: MemoryStoreRow;
   policyId: string;
@@ -43,6 +61,7 @@ type AuthorizedStoreDescriptor = Readonly<{
   defaultCapabilities: readonly MemoryOperation[];
   capabilities: readonly MemoryOperation[];
   audienceRevision: string;
+  virtualRoot: "private" | "channel" | "shared" | "projections" | "postbox-review";
 }>;
 
 export type ScopedMemoryMountRecord = AuthorizedStoreDescriptor &
@@ -257,6 +276,7 @@ export function resolveScopedMemoryAuthorizedStores(params: {
           row.current_revision_id,
           String(row.revocation_epoch),
         ]),
+        virtualRoot: resolveScopedMemoryVirtualRoot(store.scope_kind),
       },
     ];
   });
@@ -356,6 +376,7 @@ export function equalScopedMemoryAuthorizedPlan(
         leftMount.version === rightMount.version &&
         leftMount.agentId === rightMount.agentId &&
         leftMount.mountHandle === rightMount.mountHandle &&
+        leftMount.virtualRoot === rightMount.virtualRoot &&
         leftMount.audienceRevision === rightMount.audienceRevision &&
         equalOrderedValues(
           leftMount.capabilities,

@@ -152,6 +152,27 @@ describe("computeSandboxConfigHash", () => {
 
     expect(withoutSkills).not.toBe(withSkills);
   });
+
+  it("changes when the authorized memory virtual mount view changes", () => {
+    const shared = {
+      docker: createDockerConfig(),
+      workspaceAccess: "ro" as const,
+      workspaceDir: "/tmp/workspace",
+      agentWorkspaceDir: "/tmp/workspace",
+      mountFormatVersion: SANDBOX_MOUNT_FORMAT_VERSION,
+      createArgsEpoch: SANDBOX_DOCKER_CREATE_ARGS_EPOCH,
+    };
+    const first = computeSandboxConfigHash({
+      ...shared,
+      memoryVirtualMounts: ["/tmp/openclaw-memory-view-a/private/mm1_abcdefghijklmnopqrstuvwx:ro"],
+    });
+    const changedView = computeSandboxConfigHash({
+      ...shared,
+      memoryVirtualMounts: ["/tmp/openclaw-memory-view-b/private/mm1_abcdefghijklmnopqrstuvwx:ro"],
+    });
+
+    expect(changedView).not.toBe(first);
+  });
 });
 
 describe("computeSandboxBrowserConfigHash", () => {

@@ -1,4 +1,8 @@
 import type { ContextEngineSessionTarget } from "../../../context-engine/types.js";
+import {
+  assertMemoryFinalReplyEgressAuthorized,
+  isMemoryInvocationEnforced,
+} from "../../../plugins/memory-invocation.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../../tasks/agent-harness-task-runtime-scope.js";
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
@@ -395,7 +399,10 @@ export async function dispatchEmbeddedRunAttempt(input: {
     ownerNumbers: params.ownerNumbers,
     enforceFinalTag: params.enforceFinalTag,
     silentExpected: params.silentExpected,
-    suppressLiveStreamOutput: params.suppressLiveStreamOutput,
+    // A streamed block can leave the process before the final route receipt is
+    // revalidated. Enforced memory runs emit only the verified final reply.
+    suppressLiveStreamOutput:
+      params.suppressLiveStreamOutput || isMemoryInvocationEnforced(params.memoryInvocationToken),
     bootstrapContextMode: params.bootstrapContextMode,
     bootstrapContextRunKind: params.bootstrapContextRunKind,
     jobId: params.jobId,
@@ -441,5 +448,6 @@ export async function dispatchEmbeddedRunAttempt(input: {
   if (postCompactionAbortError) {
     throw postCompactionAbortError;
   }
+  assertMemoryFinalReplyEgressAuthorized(params.memoryInvocationToken);
   return { rawAttempt, cancellationRequested, preparedAttempt: attemptParams };
 }

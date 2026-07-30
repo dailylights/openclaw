@@ -36,7 +36,7 @@ describe("workboard tools", () => {
     const restrictedContext = {
       agentId: "main",
       workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: true },
+      fsPolicy: { kind: "workspace", workspaceOnly: true },
     } as const;
     const restricted = new Map(
       guardWorkboardToolsForWorkspaceAccess(
@@ -62,7 +62,7 @@ describe("workboard tools", () => {
     const unrestrictedContext = {
       agentId: "main",
       workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: false },
+      fsPolicy: { kind: "workspace", workspaceOnly: false },
     } as const;
     const unrestricted = new Map(
       guardWorkboardToolsForWorkspaceAccess(
@@ -91,7 +91,7 @@ describe("workboard tools", () => {
     const sandboxContext = {
       agentId: "main",
       workspaceDir: "/workspace",
-      fsPolicy: { workspaceOnly: false },
+      fsPolicy: { kind: "workspace", workspaceOnly: false },
       sandboxed: true,
     } as const;
     const sandboxed = new Map(

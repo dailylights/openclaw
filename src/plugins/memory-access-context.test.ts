@@ -137,6 +137,7 @@ function createPlan(
         version: 1,
         agentId: context.agentId,
         mountHandle: "mount-1",
+        virtualRoot: "private",
         capabilities: ["read", "retrieve"],
         audienceRevision: "audience-revision-1",
       },

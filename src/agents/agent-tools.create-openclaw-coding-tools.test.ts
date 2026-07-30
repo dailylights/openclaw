@@ -927,7 +927,10 @@ describe("createOpenClawCodingTools", () => {
       config: { tools: { fs: { workspaceOnly: true } } },
     });
 
-    expect(latestCreateOpenClawToolsOptions().fsPolicy).toEqual({ workspaceOnly: true });
+    expect(latestCreateOpenClawToolsOptions().fsPolicy).toEqual({
+      kind: "workspace",
+      workspaceOnly: true,
+    });
   });
 
   it("uses the canonical spawn workspace for follow-up task suggestions", () => {

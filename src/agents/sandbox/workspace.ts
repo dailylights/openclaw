@@ -18,6 +18,7 @@ import {
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
   DEFAULT_IDENTITY_FILENAME,
+  DEFAULT_MEMORY_FILENAME,
   DEFAULT_SOUL_FILENAME,
   DEFAULT_USER_FILENAME,
   ensureAgentWorkspace,
@@ -30,8 +31,22 @@ export async function ensureSandboxWorkspace(
   seedFrom?: string,
   skipBootstrap?: boolean,
   skipOptionalBootstrapFiles?: OptionalBootstrapFileName[],
+  excludeControlledMemory = false,
 ) {
   await fs.mkdir(workspaceDir, { recursive: true });
+  const skippedOptionalBootstrapFiles = new Set(skipOptionalBootstrapFiles ?? []);
+  if (excludeControlledMemory) {
+    // The sandbox workspace is an independently-owned copy. Remove legacy
+    // memory artifacts before seeding so its ordinary workspace mount cannot
+    // expose them beside the authorization-specific virtual mounts.
+    await Promise.all(
+      [DEFAULT_MEMORY_FILENAME, DEFAULT_USER_FILENAME, "memory"].map(
+        async (name) =>
+          await fs.rm(path.join(workspaceDir, name), { recursive: true, force: true }),
+      ),
+    );
+    skippedOptionalBootstrapFiles.add(DEFAULT_USER_FILENAME);
+  }
   if (seedFrom) {
     const seed = resolveUserPath(seedFrom);
     const files = [
@@ -40,7 +55,7 @@ export async function ensureSandboxWorkspace(
       DEFAULT_IDENTITY_FILENAME,
       DEFAULT_USER_FILENAME,
       DEFAULT_BOOTSTRAP_FILENAME,
-    ];
+    ].filter((name) => !skippedOptionalBootstrapFiles.has(name as OptionalBootstrapFileName));
     for (const name of files) {
       const src = path.join(seed, name);
       const dest = path.join(workspaceDir, name);
@@ -78,6 +93,6 @@ export async function ensureSandboxWorkspace(
   await ensureAgentWorkspace({
     dir: workspaceDir,
     ensureBootstrapFiles: !skipBootstrap,
-    skipOptionalBootstrapFiles,
+    skipOptionalBootstrapFiles: [...skippedOptionalBootstrapFiles],
   });
 }

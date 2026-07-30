@@ -6,7 +6,7 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SandboxBackendHandle } from "./backend-handle.types.js";
 import type { SandboxRegistryEntry } from "./registry.js";
-import type { SandboxConfig } from "./types.js";
+import type { SandboxConfig, SandboxMemoryVirtualMount } from "./types.js";
 
 /** Current runtime state reported by a sandbox backend manager. */
 export type SandboxBackendRuntimeInfo = {
@@ -38,6 +38,7 @@ export type CreateSandboxBackendParams = {
   workspaceDir: string;
   agentWorkspaceDir: string;
   skillsWorkspaceDir?: string;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
   cfg: SandboxConfig;
   requireCurrentConfig?: boolean;
 };

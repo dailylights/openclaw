@@ -6,16 +6,39 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
-import type { ToolFsPolicy } from "./tool-fs-policy.types.js";
+import type { ToolFsPolicy, ToolFsVirtualMemoryMount } from "./tool-fs-policy.types.js";
 import { isToolAllowedByPolicies } from "./tool-policy-match.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "./tool-policy.js";
 
 export type { ToolFsPolicy } from "./tool-fs-policy.types.js";
 
-export function createToolFsPolicy(params: { workspaceOnly?: boolean }): ToolFsPolicy {
-  return {
-    workspaceOnly: params.workspaceOnly === true,
-  };
+export function createToolFsPolicy(
+  params:
+    | { workspaceOnly?: boolean }
+    | { kind: "authorized-memory-virtual"; memoryMounts: readonly ToolFsVirtualMemoryMount[] }
+    | {
+        kind: "sandbox-memory-mount-plan";
+        memoryMounts: readonly ToolFsVirtualMemoryMount[];
+        viewId: string;
+      }
+    | { kind: "memory-blocked"; reason: "memory-unavailable" | "sandbox-view-unavailable" },
+): ToolFsPolicy {
+  if (!("kind" in params)) {
+    return { kind: "workspace", workspaceOnly: params.workspaceOnly === true };
+  }
+  switch (params.kind) {
+    case "authorized-memory-virtual":
+      return { kind: params.kind, workspaceOnly: true, memoryMounts: params.memoryMounts };
+    case "sandbox-memory-mount-plan":
+      return {
+        kind: params.kind,
+        workspaceOnly: true,
+        memoryMounts: params.memoryMounts,
+        viewId: params.viewId,
+      };
+    case "memory-blocked":
+      return { kind: params.kind, workspaceOnly: true, reason: params.reason };
+  }
 }
 
 export function resolveToolFsConfig(params: { cfg?: OpenClawConfig; agentId?: string }): {

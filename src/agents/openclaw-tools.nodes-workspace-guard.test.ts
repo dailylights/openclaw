@@ -70,7 +70,7 @@ describe("applyNodesToolWorkspaceGuard", () => {
       ...harness,
       guardedTool: applyNodesToolWorkspaceGuard(harness.tool, {
         workspaceDir: WORKSPACE_ROOT,
-        fsPolicy: { workspaceOnly },
+        fsPolicy: { kind: "workspace", workspaceOnly },
         sandboxRoot: options?.sandboxRoot,
         sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
       }),

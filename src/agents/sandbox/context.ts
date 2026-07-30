@@ -26,7 +26,7 @@ import { readRegisteredSandboxRuntimeIds, updateRegistry } from "./registry.js";
 import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
 import { assertSshSandboxSecretOwnerAvailable } from "./secret-owner.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
-import type { SandboxContext, SandboxWorkspaceInfo } from "./types.js";
+import type { SandboxContext, SandboxMemoryVirtualMount, SandboxWorkspaceInfo } from "./types.js";
 import { ensureSandboxWorkspace } from "./workspace.js";
 
 async function syncSandboxSkillsToWorkspace(params: {
@@ -80,6 +80,7 @@ async function ensureSandboxWorkspaceLayout(params: {
   rawSessionKey: string;
   config?: OpenClawConfig;
   execOverrides?: ExecPolicyOverrides;
+  excludeControlledMemory?: boolean;
   workspaceDir?: string;
 }): Promise<{
   agentWorkspaceDir: string;
@@ -105,6 +106,7 @@ async function ensureSandboxWorkspaceLayout(params: {
       agentWorkspaceDir,
       params.config?.agents?.defaults?.skipBootstrap,
       params.config?.agents?.defaults?.skipOptionalBootstrapFiles,
+      params.excludeControlledMemory,
     );
     syncedSkills = await syncSandboxSkillsToWorkspace({
       sourceWorkspaceDir: agentWorkspaceDir,
@@ -191,9 +193,11 @@ type ResolveSandboxContextParams = {
   config?: OpenClawConfig;
   agentId?: string;
   execOverrides?: ExecPolicyOverrides;
+  excludeControlledMemory?: boolean;
   requireCurrentConfig?: boolean;
   sessionKey?: string;
   workspaceDir?: string;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
 };
 
 type ResolvedSandboxSession = NonNullable<ReturnType<typeof resolveSandboxSession>>;
@@ -221,6 +225,7 @@ async function resolveProvisionedSandboxContext(
     rawSessionKey,
     config: params.config,
     execOverrides: params.execOverrides,
+    excludeControlledMemory: params.excludeControlledMemory,
     workspaceDir: params.workspaceDir,
   });
 
@@ -230,6 +235,9 @@ async function resolveProvisionedSandboxContext(
     workspaceDir,
   });
   const resolvedCfg = docker === cfg.docker ? cfg : { ...cfg, docker };
+  if (params.excludeControlledMemory && resolvedCfg.workspaceAccess === "rw") {
+    throw new Error("enforced memory requires a non-writable sandbox workspace");
+  }
 
   const backendFactory = requireSandboxBackendFactory(resolvedCfg.backend);
   const registeredRuntimeIds = await readRegisteredSandboxRuntimeIds({
@@ -243,6 +251,9 @@ async function resolveProvisionedSandboxContext(
     workspaceDir,
     agentWorkspaceDir,
     skillsWorkspaceDir,
+    ...(cfg.scope === "session" && params.memoryVirtualMounts?.length
+      ? { memoryVirtualMounts: params.memoryVirtualMounts }
+      : {}),
     cfg: resolvedCfg,
     ...(params.requireCurrentConfig !== undefined
       ? { requireCurrentConfig: params.requireCurrentConfig }
@@ -309,6 +320,9 @@ async function resolveProvisionedSandboxContext(
     ...(skillsEligibility ? { skillsEligibility } : {}),
     ...(skillUsagePaths ? { skillUsagePaths } : {}),
     workspaceAccess: resolvedCfg.workspaceAccess,
+    ...(cfg.scope === "session" && params.memoryVirtualMounts?.length
+      ? { memoryVirtualMounts: params.memoryVirtualMounts }
+      : {}),
     runtimeId: backend.runtimeId,
     runtimeLabel: backend.runtimeLabel,
     containerName: backend.runtimeId,
@@ -331,6 +345,8 @@ export async function resolveSandboxContext(params: {
   config?: OpenClawConfig;
   agentId?: string;
   execOverrides?: ExecPolicyOverrides;
+  excludeControlledMemory?: boolean;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
   requireCurrentConfig?: boolean;
   sessionKey?: string;
   workspaceDir?: string;

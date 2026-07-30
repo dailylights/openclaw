@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core";
 import { readCurrentSessionMemorySubjectAuthority } from "../config/sessions/session-memory-subject-access.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   AudienceRef,
+  AuthorizedMemoryPlan,
   MemoryAccessContext,
   MemoryActorEvidence,
   VerifiedPrincipalRef,
@@ -18,13 +22,16 @@ import {
   type MemoryAccessContextFacts,
 } from "./memory-access-context.js";
 import { isMemoryIsolationCutoverAgent } from "./memory-cutover.js";
+import { listMemoryEgressCapabilityIds } from "./memory-egress-registry.js";
 import {
   advanceMemoryRunExposure,
   createMemoryDisplayHandleRegistry,
+  hasCurrentMemoryEgressReceipts,
   mergeMemoryInvocationEnvelope,
   rememberMemoryDisplayHandle,
   resolveUniqueMemoryDisplayHandle,
   type MemoryInvocationState,
+  type MemoryVirtualFilesystemView,
   type TranscriptMemoryRunExposureSnapshot,
 } from "./memory-invocation-receipts.js";
 import {
@@ -69,6 +76,79 @@ type AuthorizedMemoryToolSearchResult = Readonly<{
 }>;
 
 const invocationStateByToken = new WeakMap<MemoryInvocationToken, MemoryInvocationState>();
+
+const MEMORY_VIRTUAL_ROOTS = new Set([
+  "private",
+  "channel",
+  "shared",
+  "projections",
+  "postbox-review",
+]);
+
+type MemoryVirtualRoot = "private" | "channel" | "shared" | "projections" | "postbox-review";
+
+function normalizeVirtualPath(value: string): string | undefined {
+  const normalized = value.normalize("NFKC").replaceAll("\\", "/");
+  if (normalized !== value || normalized.startsWith("/") || normalized.includes("\0")) {
+    return undefined;
+  }
+  const parts = normalized.split("/");
+  if (
+    parts.length !== 3 ||
+    parts.some((part) => !part || part === "." || part === "..") ||
+    !MEMORY_VIRTUAL_ROOTS.has(parts[0] ?? "")
+  ) {
+    return undefined;
+  }
+  const [root, mountHandle, fileName] = parts;
+  if (
+    !root ||
+    !mountHandle ||
+    !fileName ||
+    !/^mm1_[A-Za-z0-9_-]{24,}$/u.test(mountHandle) ||
+    !/^mrh1_[A-Za-z0-9_-]{24,}\.md$/u.test(fileName)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function isMemoryVirtualRootPath(value: string): boolean {
+  const normalized = value.normalize("NFKC").replaceAll("\\", "/");
+  const root = normalized.split("/", 1)[0]?.toLowerCase();
+  return typeof root === "string" && MEMORY_VIRTUAL_ROOTS.has(root);
+}
+
+async function createMemoryVirtualFilesystemView(params: {
+  context: MemoryAccessContext;
+  plan: AuthorizedMemoryPlan;
+}): Promise<MemoryVirtualFilesystemView> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-view-"));
+  try {
+    const roots = await Promise.all(
+      params.plan.mounts.map(async (mount) => {
+        const virtualRoot = mount.virtualRoot as MemoryVirtualRoot;
+        const sourcePath = path.join(rootDir, virtualRoot, mount.mountHandle);
+        await fs.mkdir(sourcePath, { recursive: true, mode: 0o500 });
+        await fs.chmod(sourcePath, 0o500);
+        return Object.freeze({ virtualRoot, mountHandle: mount.mountHandle, sourcePath });
+      }),
+    );
+    await fs.chmod(rootDir, 0o700);
+    return Object.freeze({
+      viewId: hashMemoryRevision("mvv1", {
+        contextFingerprint: params.context.contextFingerprint,
+        planId: params.plan.planId,
+        mounts: roots.map((root) => `${root.virtualRoot}\0${root.mountHandle}`).toSorted(),
+      }),
+      rootDir,
+      roots: Object.freeze(roots),
+    });
+  } catch (error) {
+    await fs.rm(rootDir, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 function buildAuthorityFacts(params: {
   agentId: string;
@@ -168,7 +248,10 @@ function buildAuthorityFacts(params: {
     return undefined;
   }
 
-  const egressCapabilityIds = ["message.send", "reply.final"];
+  // Phase 1D starts with a constrained pilot: only the already-bound final
+  // reply can carry scoped content. Every other side-effect is classified but
+  // unavailable until it has an audience-bound delivery contract.
+  const egressCapabilityIds = ["reply.final"];
   const deliveryBinding = {
     sinkKind,
     audiences: sortedMemoryAudiences(audiences),
@@ -178,7 +261,7 @@ function buildAuthorityFacts(params: {
     threadId: params.messageThreadId ?? null,
   };
   const deliveryRevision = hashMemoryRevision("mdr1", deliveryBinding);
-  const egressRegistryRevision = hashMemoryRevision("mer1", egressCapabilityIds);
+  const egressRegistryRevision = hashMemoryRevision("mer1", listMemoryEgressCapabilityIds());
   const hostFactsRevision = hashMemoryRevision("mhf1", {
     sessionIdentityRevision: snapshot.sessionIdentityRevision,
     subjectRevision: snapshot.subjectRevision,
@@ -228,21 +311,26 @@ function revalidateInvocation(token: MemoryInvocationToken, state: MemoryInvocat
   if (Date.parse(plan.expiresAt) <= Date.now()) {
     return false;
   }
-  const current = readCurrentSessionMemorySubjectAuthority({
+  const facts = buildAuthorityFacts({
     agentId: state.agentId,
+    sessionId: state.sessionId,
     sessionKey: state.sessionKey,
+    runId: state.runId,
+    ...state.deliveryInput,
   });
-  if (!current || current.authority.kind !== "current") {
+  if (!facts) {
     return false;
   }
   return (
-    current.snapshot.sessionId === context.sessionId &&
-    current.snapshot.sessionIdentityRevision === context.sessionIdentityRevision &&
-    current.snapshot.subjectRevision === context.subjectRevision &&
-    stableStringify(current.snapshot.subject) === stableStringify(context.subject) &&
+    facts.sessionId === context.sessionId &&
+    facts.sessionIdentityRevision === context.sessionIdentityRevision &&
+    facts.subjectRevision === context.subjectRevision &&
+    stableStringify(facts.subject) === stableStringify(context.subject) &&
+    facts.delivery.deliveryRevision === context.delivery.deliveryRevision &&
+    facts.delivery.egressRegistryRevision === context.delivery.egressRegistryRevision &&
     plan.contextFingerprint === context.contextFingerprint &&
     plan.runId === context.runId &&
-    plan.deliveryRevision === context.delivery.deliveryRevision
+    plan.deliveryRevision === facts.delivery.deliveryRevision
   );
 }
 
@@ -301,6 +389,12 @@ export async function initializeMemoryInvocation(params: {
     return;
   }
   try {
+    state.deliveryInput = Object.freeze({
+      ...(params.messageChannel !== undefined ? { messageChannel: params.messageChannel } : {}),
+      ...(params.agentAccountId !== undefined ? { agentAccountId: params.agentAccountId } : {}),
+      ...(params.messageTo !== undefined ? { messageTo: params.messageTo } : {}),
+      ...(params.messageThreadId !== undefined ? { messageThreadId: params.messageThreadId } : {}),
+    });
     const facts = buildAuthorityFacts(params);
     if (!facts) {
       state.initialization = "unavailable";
@@ -328,6 +422,10 @@ export async function initializeMemoryInvocation(params: {
     }
     state.runtime = authorization.runtime;
     state.plan = authorization.plan;
+    state.virtualFilesystem = await createMemoryVirtualFilesystemView({
+      context,
+      plan: authorization.plan,
+    });
     advanceMemoryRunExposure({
       state,
       sourcePolicySetIds: [],
@@ -341,6 +439,7 @@ export async function initializeMemoryInvocation(params: {
     state.plan = undefined;
     state.runtime = undefined;
     state.runExposure = undefined;
+    state.virtualFilesystem = undefined;
     state.initialization = "unavailable";
   }
 }
@@ -349,7 +448,14 @@ export async function withMemoryInvocation<T>(
   token: MemoryInvocationToken | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  return await withMemoryInvocationToken(token, run);
+  try {
+    return await withMemoryInvocationToken(token, run);
+  } finally {
+    const view = token ? invocationStateByToken.get(token)?.virtualFilesystem : undefined;
+    if (view) {
+      await fs.rm(view.rootDir, { recursive: true, force: true });
+    }
+  }
 }
 
 function readInvocationState(token: MemoryInvocationToken): MemoryInvocationState | undefined {
@@ -390,9 +496,21 @@ export async function searchAuthorizedMemoryForInvocation(params: {
       isInvocationValid: () => revalidateInvocation(params.token, state),
     });
     const results = envelope.value.map((result) => {
-      rememberMemoryDisplayHandle(state.displayHandles, result.path, result.resourceHandle);
-      const { resourceHandle: _resourceHandle, ...safe } = result;
-      return Object.freeze(safe);
+      const mount = state.plan?.mounts.find((entry) => entry.mountHandle === result.mountHandle);
+      const virtualPath =
+        mount && state.virtualFilesystem
+          ? `${mount.virtualRoot}/${mount.mountHandle}/${result.resourceHandle.handleId}.md`
+          : undefined;
+      if (!virtualPath) {
+        throw new Error("memory virtual view is unavailable");
+      }
+      rememberMemoryDisplayHandle(state.displayHandles, virtualPath, result.resourceHandle);
+      const { resourceHandle: _resourceHandle, mountHandle: _mountHandle, ...safe } = result;
+      return Object.freeze({
+        ...safe,
+        path: virtualPath,
+        citation: `${virtualPath}#L${result.startLine}-L${result.endLine}`,
+      });
     });
     return Object.freeze({ results: Object.freeze(results) });
   } catch {
@@ -434,9 +552,87 @@ export async function readAuthorizedMemoryForInvocation(params: {
       expectedResourceRevisions: [handle.resourceRevision],
       isInvocationValid: () => revalidateInvocation(params.token, state),
     });
-    return Object.freeze({ ...envelope.value });
+    return Object.freeze({ ...envelope.value, path: params.path });
   } catch {
     return MEMORY_INVOCATION_UNAVAILABLE;
+  }
+}
+
+/** Returns the ephemeral mount plan only while its invocation remains current. */
+export function getMemoryVirtualFilesystemView(
+  token: MemoryInvocationToken | undefined,
+): MemoryVirtualFilesystemView | undefined {
+  if (!token) {
+    return undefined;
+  }
+  const state = readInvocationState(token);
+  return state && revalidateInvocation(token, state) ? state.virtualFilesystem : undefined;
+}
+
+/** Recognizes any reserved virtual root, including malformed/case-confused paths. */
+export function isMemoryVirtualFilesystemPath(pathname: string): boolean {
+  return isMemoryVirtualRootPath(pathname);
+}
+
+/** Reads one opaque virtual file through the authorization broker, never host storage. */
+export async function readVirtualMemoryFilesystemPath(params: {
+  token: MemoryInvocationToken;
+  path: string;
+  offset?: number;
+  limit?: number;
+}): Promise<MemoryReadResult | MemoryInvocationUnavailable> {
+  const normalizedPath = normalizeVirtualPath(params.path);
+  if (!normalizedPath) {
+    return MEMORY_INVOCATION_UNAVAILABLE;
+  }
+  return await readAuthorizedMemoryForInvocation({
+    token: params.token,
+    path: normalizedPath,
+    from: params.offset,
+    lines: params.limit,
+  });
+}
+
+/**
+ * Side-effect tools cannot run after a scoped read in the constrained pilot.
+ * Final delivery is checked separately because it is bound to the original route.
+ */
+export function isMemoryScopedToolEgressBlocked(token: MemoryInvocationToken | undefined): boolean {
+  if (!token) {
+    return false;
+  }
+  const state = readInvocationState(token);
+  const exposure = state?.runExposure;
+  const resourceRevisions = exposure
+    ? parseCanonicalMemoryStringArray(exposure.exposedResourceRevisionsJson)
+    : undefined;
+  return !resourceRevisions || resourceRevisions.length > 0;
+}
+
+/** Final reply delivery may proceed only with current route and egress receipts. */
+export function assertMemoryFinalReplyEgressAuthorized(
+  token: MemoryInvocationToken | undefined,
+): void {
+  if (!token) {
+    return;
+  }
+  const state = readInvocationState(token);
+  const exposure = state?.runExposure;
+  const resourceRevisions = exposure
+    ? parseCanonicalMemoryStringArray(exposure.exposedResourceRevisionsJson)
+    : undefined;
+  if (resourceRevisions?.length === 0) {
+    return;
+  }
+  if (
+    !state ||
+    !revalidateInvocation(token, state) ||
+    !state.context?.delivery.egressCapabilityIds.includes("reply.final") ||
+    !exposure ||
+    !isCurrentRunExposureValid(state, exposure) ||
+    !hasCurrentMemoryEgressReceipts(state)
+  ) {
+    throw new Error("memory final reply egress is unavailable");
   }
 }
 

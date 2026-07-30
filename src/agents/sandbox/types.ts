@@ -35,6 +35,14 @@ export type SandboxToolPolicyResolved = {
 
 export type SandboxWorkspaceAccess = "none" | "ro" | "rw";
 
+/** Ephemeral host directory mounted read-only over one virtual memory root. */
+export type SandboxMemoryVirtualMount = Readonly<{
+  viewId: string;
+  virtualRoot: "private" | "channel" | "shared" | "projections" | "postbox-review";
+  mountHandle: string;
+  sourcePath: string;
+}>;
+
 export type SandboxBrowserConfig = {
   enabled: boolean;
   image: string;
@@ -104,6 +112,7 @@ export type SandboxContext = {
   skillsEligibility?: SkillEligibilityContext;
   skillUsagePaths?: SkillUsagePath[];
   workspaceAccess: SandboxWorkspaceAccess;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
   runtimeId: string;
   runtimeLabel: string;
   containerName: string;

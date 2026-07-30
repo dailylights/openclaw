@@ -2108,7 +2108,7 @@ describe("image tool implicit imageModel config", () => {
           config: cfg,
           agentDir,
           workspaceDir,
-          fsPolicy: { workspaceOnly: true },
+          fsPolicy: { kind: "workspace", workspaceOnly: true },
         });
 
         // File inside workspace is allowed.
@@ -2141,7 +2141,7 @@ describe("image tool implicit imageModel config", () => {
         const tool = createRequiredImageTool({
           config: cfg,
           agentDir,
-          fsPolicy: { workspaceOnly: false },
+          fsPolicy: { kind: "workspace", workspaceOnly: false },
         });
 
         await expect(
@@ -2409,7 +2409,7 @@ describe("image tool implicit imageModel config", () => {
         agentDir,
         workspaceDir: sandboxRoot,
         sandbox: { root: sandboxRoot, bridge },
-        fsPolicy: { workspaceOnly: true },
+        fsPolicy: { kind: "workspace", workspaceOnly: true },
       });
       await expect(
         imageTool.execute("t1", {
@@ -2825,7 +2825,7 @@ describe("image tool managed inbound media", () => {
           config: createMinimaxImageConfig(),
           agentDir,
           workspaceDir,
-          fsPolicy: { workspaceOnly: true },
+          fsPolicy: { kind: "workspace", workspaceOnly: true },
         });
 
         await expectImageToolExecOk(tool, `media://inbound/${mediaId}`);
@@ -2842,7 +2842,7 @@ describe("image tool managed inbound media", () => {
         const tool = createRequiredImageTool({
           config: createMinimaxImageConfig(),
           agentDir,
-          fsPolicy: { workspaceOnly: true },
+          fsPolicy: { kind: "workspace", workspaceOnly: true },
         });
 
         await expectImageToolExecOk(tool, mediaPath);

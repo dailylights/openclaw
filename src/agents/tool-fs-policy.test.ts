@@ -3,9 +3,54 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
+  createToolFsPolicy,
   resolveEffectiveToolFsRootExpansionAllowed,
   resolveEffectiveToolFsWorkspaceOnly,
 } from "./tool-fs-policy.js";
+
+describe("createToolFsPolicy", () => {
+  const memoryMount = {
+    virtualRoot: "private" as const,
+    mountHandle: "mm1_abcdefghijklmnopqrstuvwx",
+  };
+
+  it("returns an explicit normal workspace policy", () => {
+    expect(createToolFsPolicy({ workspaceOnly: false })).toEqual({
+      kind: "workspace",
+      workspaceOnly: false,
+    });
+  });
+
+  it("represents an authorized virtual memory view without widening workspace access", () => {
+    expect(
+      createToolFsPolicy({ kind: "authorized-memory-virtual", memoryMounts: [memoryMount] }),
+    ).toEqual({
+      kind: "authorized-memory-virtual",
+      workspaceOnly: true,
+      memoryMounts: [memoryMount],
+    });
+  });
+
+  it("keeps sandbox plans and unavailable memory distinguishable", () => {
+    expect(
+      createToolFsPolicy({
+        kind: "sandbox-memory-mount-plan",
+        memoryMounts: [memoryMount],
+        viewId: "view-1",
+      }),
+    ).toEqual({
+      kind: "sandbox-memory-mount-plan",
+      workspaceOnly: true,
+      memoryMounts: [memoryMount],
+      viewId: "view-1",
+    });
+    expect(createToolFsPolicy({ kind: "memory-blocked", reason: "memory-unavailable" })).toEqual({
+      kind: "memory-blocked",
+      workspaceOnly: true,
+      reason: "memory-unavailable",
+    });
+  });
+});
 
 describe("resolveEffectiveToolFsWorkspaceOnly", () => {
   it("returns false by default when tools.fs.workspaceOnly is unset", () => {

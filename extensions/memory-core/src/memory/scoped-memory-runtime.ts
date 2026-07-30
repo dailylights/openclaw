@@ -428,6 +428,7 @@ export function createBuiltinScopedMemoryRuntime(
               version: 1 as const,
               agentId,
               mountHandle: mount.mountHandle,
+              virtualRoot: mount.virtualRoot,
               capabilities: Object.freeze([...mount.capabilities]),
               audienceRevision: mount.audienceRevision,
             }),
@@ -522,6 +523,12 @@ export function createBuiltinScopedMemoryRuntime(
             plan: params.plan,
             snapshot,
           });
+          const mount = planRecord.mounts.find(
+            (entry) => entry.store.store_id === snapshot.storeId,
+          );
+          if (!mount) {
+            throw new Error("authorized memory mount is unavailable");
+          }
           snapshots.push(snapshot);
           resultHandles.push(resourceHandle);
           results.push(
@@ -538,6 +545,7 @@ export function createBuiltinScopedMemoryRuntime(
               source: snapshot.source,
               citation: `${snapshot.logicalLocator}#L${snapshot.chunk.startLine}-L${snapshot.chunk.endLine}`,
               resourceHandle,
+              mountHandle: mount.mountHandle,
             }),
           );
           if (results.length >= limit) {

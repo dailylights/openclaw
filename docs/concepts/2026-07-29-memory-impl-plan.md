@@ -1082,23 +1082,23 @@ Focused existing tests:
 
 Phase 1D is complete only when all of the following are demonstrated:
 
-- [ ] Model-facing `read`, `write`, `edit`, and `apply_patch` cannot resolve a
+- [x] Model-facing `read`, `write`, `edit`, and `apply_patch` cannot resolve a
       raw controlled-memory path or an unmounted store.
-- [ ] Traversal, symlink, case-normalization, Unicode, stale-handle,
+- [x] Traversal, symlink, case-normalization, Unicode, stale-handle,
       virtual-to-host, and relevant hard-link tests fail closed.
-- [ ] Sandboxed runs receive only their authorized virtual roots, with physical
+- [x] Sandboxed runs receive only their authorized virtual roots, with physical
       read-only enforcement where required and no real artifact-root mount.
-- [ ] Unsandboxed `exec` is denied/hidden for model-adversarial mode, or the
+- [x] Unsandboxed `exec` is denied/hidden for model-adversarial mode, or the
       deployment is explicitly limited to cooperative isolation with a Doctor
       security finding.
-- [ ] Every enabled side-effect path after scoped exposure is classified in the
+- [x] Every enabled side-effect path after scoped exposure is classified in the
       egress registry or denied by the approved constrained-pilot policy.
-- [ ] A later exposure, route change, sink change, delivery revision, or
+- [x] A later exposure, route change, sink change, delivery revision, or
       registry revision invalidates older egress authorization.
-- [ ] Scoped content cannot reach an audience outside the run exposure set.
-- [ ] Filesystem, sandbox, exec, route-rebound, and egress-registry tests pass
+- [x] Scoped content cannot reach an audience outside the run exposure set.
+- [x] Filesystem, sandbox, exec, route-rebound, and egress-registry tests pass
       on the required local and remote/cross-platform lanes.
-- [ ] Only after all prior items pass may a two-subject read-only pilot begin,
+- [x] Only after all prior items pass may a two-subject read-only pilot begin,
       and its documented isolation claim matches the tested profile.
 
 ### Rollback

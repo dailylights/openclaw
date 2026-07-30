@@ -72,11 +72,11 @@ describe("openclaw plugin tool context", () => {
     const result = resolveOpenClawPluginToolInputs({
       options: {
         config: {} as never,
-        fsPolicy: { workspaceOnly: true },
+        fsPolicy: { kind: "workspace", workspaceOnly: true },
       },
     });
 
-    expect(result.context.fsPolicy).toStrictEqual({ workspaceOnly: true });
+    expect(result.context.fsPolicy).toStrictEqual({ kind: "workspace", workspaceOnly: true });
   });
 
   it("forwards ephemeral sessionId", () => {

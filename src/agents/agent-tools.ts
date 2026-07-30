@@ -3,6 +3,7 @@
  * Assembles core, shell, channel, OpenClaw, plugin, and Tool Search tools, then
  * applies sandbox, profile, provider, sender, group, and sub-agent policy.
  */
+import path from "node:path";
 import type {
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
@@ -21,7 +22,13 @@ import type {
   PluginHookChannelContext,
   PluginHookToolRequesterContext,
 } from "../plugins/hook-types.js";
-import type { MemoryInvocationToken } from "../plugins/memory-invocation.js";
+import {
+  getMemoryVirtualFilesystemView,
+  isMemoryInvocationEnforced,
+  isMemoryVirtualFilesystemPath,
+  readVirtualMemoryFilesystemPath,
+  type MemoryInvocationToken,
+} from "../plugins/memory-invocation.js";
 import { resolveMemoryFlushPlan } from "../plugins/memory-state.js";
 import { appendRuntimePluginToolGrant } from "../plugins/tool-grant-allowlist.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
@@ -33,7 +40,10 @@ import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import type { ToolOutcomeObserver } from "./agent-tools.before-tool-call.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import { filterToolsByMessageProvider } from "./agent-tools.message-provider-policy.js";
-import { wrapToolMemoryFlushAppendOnlyWrite } from "./agent-tools.read.js";
+import {
+  wrapReadToolWithMemoryVirtualFilesystem,
+  wrapToolMemoryFlushAppendOnlyWrite,
+} from "./agent-tools.read.js";
 import {
   getActiveAgentRingZeroTools,
   mergeAgentRingZeroTools,
@@ -63,6 +73,8 @@ import {
   filterLocalModelLeanTools,
   resolveLocalModelLeanPreserveToolNames,
 } from "./local-model-lean.js";
+import { wrapToolWithMemoryEgressPolicy } from "./memory-egress-tool-policy.js";
+import { isRawControlledMemoryWorkspacePath } from "./memory-virtual-filesystem-paths.js";
 import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.js";
 import type { ModelAuthMode } from "./model-auth.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
@@ -105,6 +117,26 @@ import {
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
 
 const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
+
+function resolveMemoryVirtualPathForTool(params: {
+  pathname: string;
+  root: string;
+  containerWorkdir?: string;
+}): string | undefined {
+  if (isMemoryVirtualFilesystemPath(params.pathname)) {
+    return params.pathname;
+  }
+  const containerWorkdir = params.containerWorkdir?.replace(/\/+$/u, "");
+  if (containerWorkdir && params.pathname.startsWith(`${containerWorkdir}/`)) {
+    const relative = params.pathname.slice(containerWorkdir.length + 1);
+    return isMemoryVirtualFilesystemPath(relative) ? relative : undefined;
+  }
+  if (path.isAbsolute(params.pathname)) {
+    const relative = path.relative(params.root, params.pathname).split(path.sep).join("/");
+    return isMemoryVirtualFilesystemPath(relative) ? relative : undefined;
+  }
+  return undefined;
+}
 
 /** Resolve the process-tool isolation key for exec/process session state. */
 export function resolveProcessToolScopeKey(params: {
@@ -504,9 +536,21 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   options?.recordToolPrepStage?.("tool-policy");
   const execConfig = resolveExecToolConfig({ cfg: options?.config, agentId });
   const fsConfig = resolveToolFsConfig({ cfg: options?.config, agentId });
-  const fsPolicy = createToolFsPolicy({
-    workspaceOnly: isMemoryFlushRun || fsConfig.workspaceOnly,
-  });
+  const memoryInvocationToken = options?.memoryInvocationToken;
+  const memoryIsolated = isMemoryInvocationEnforced(memoryInvocationToken);
+  const memoryVirtualView = memoryInvocationToken
+    ? getMemoryVirtualFilesystemView(memoryInvocationToken)
+    : undefined;
+  const memoryMounts =
+    memoryVirtualView?.roots.map(({ virtualRoot, mountHandle }) => ({
+      virtualRoot,
+      mountHandle,
+    })) ?? [];
+  const fsPolicy = memoryIsolated
+    ? memoryVirtualView
+      ? createToolFsPolicy({ kind: "authorized-memory-virtual", memoryMounts })
+      : createToolFsPolicy({ kind: "memory-blocked", reason: "memory-unavailable" })
+    : createToolFsPolicy({ workspaceOnly: isMemoryFlushRun || fsConfig.workspaceOnly });
   const sandboxRoot = sandbox?.workspaceDir;
   const sandboxFsBridge = sandbox?.fsBridge;
   const allowWorkspaceWrites = sandbox?.workspaceAccess !== "ro";
@@ -540,6 +584,34 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   const includeChannelTools = toolConstructionPlan.includeChannelTools;
   const includePluginTools = toolConstructionPlan.includePluginTools;
   const workspaceOnly = fsPolicy.workspaceOnly;
+  const wrapMemoryVirtualRead = (tool: AnyAgentTool): AnyAgentTool => {
+    if (!memoryVirtualView || !memoryInvocationToken) {
+      return tool;
+    }
+    return wrapReadToolWithMemoryVirtualFilesystem(tool, {
+      resolveVirtualPath: (pathname) =>
+        resolveMemoryVirtualPathForTool({
+          pathname,
+          root: codingRoot,
+          ...(sandbox?.containerWorkdir ? { containerWorkdir: sandbox.containerWorkdir } : {}),
+        }),
+      isControlledWorkspacePath: async (pathname) =>
+        await isRawControlledMemoryWorkspacePath({
+          root: codingRoot,
+          pathname,
+          ...(sandbox?.containerWorkdir ? { containerWorkdir: sandbox.containerWorkdir } : {}),
+        }),
+      readVirtualPath: async ({ path: virtualPath, offset, limit }) =>
+        await readVirtualMemoryFilesystemPath({
+          token: memoryInvocationToken,
+          path: virtualPath,
+          ...(offset !== undefined ? { offset } : {}),
+          ...(limit !== undefined
+            ? { limit: Math.max(1, Math.min(1_000, Math.trunc(limit))) }
+            : {}),
+        }),
+    });
+  };
   const applyPatchConfig = execConfig.applyPatch;
   // Secure by default: apply_patch is workspace-contained unless explicitly disabled.
   // (tools.fs.workspaceOnly is a separate umbrella flag for read/write/edit/apply_patch.)
@@ -558,8 +630,11 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   const effectiveExecPolicy = applyExecPolicyLayer(execConfig, options?.exec);
   const coreTools = createCoreCodingTools({
     codingRoot,
-    includeBaseCodingTools,
-    includeShellTools,
+    // Memory turns expose no mutation or shell tool. A ready virtual view retains
+    // only read; its wrapper brokers scoped paths so raw controlled artifacts cannot leak.
+    includeBaseCodingTools:
+      includeBaseCodingTools && (!memoryIsolated || Boolean(memoryVirtualView)),
+    includeShellTools: includeShellTools && !memoryIsolated,
     workspaceOnly,
     sandbox,
     skillsSnapshot: options?.skillsSnapshot,
@@ -567,7 +642,11 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     imageSanitization,
     memoryWriteProvenance,
     ...(includeBaseCodingTools
-      ? { baseToolNames: createCodingTools(codingRoot).map((tool) => tool.name) }
+      ? {
+          baseToolNames: createCodingTools(codingRoot)
+            .map((tool) => tool.name)
+            .filter((name) => !memoryIsolated || name === "read"),
+        }
       : {}),
     baseToolFactories: {
       createEditTool,
@@ -630,6 +709,9 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     },
     recordToolPrepStage: options?.recordToolPrepStage,
   });
+  const scopedCoreTools = memoryIsolated
+    ? coreTools.filter((tool) => tool.name === "read").map(wrapMemoryVirtualRead)
+    : coreTools;
   const ownerOnlyCoreToolDenylist =
     options?.senderIsOwner === false ? [...GATEWAY_OWNER_ONLY_CORE_TOOLS] : [];
   const ownerOnlyCoreToolPolicy =
@@ -732,7 +814,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
         })
       : [];
   const tools: AnyAgentTool[] = [
-    ...coreTools,
+    ...scopedCoreTools,
     // Channel docking: include channel-defined agent tools (login, etc.).
     ...(includeChannelTools ? listChannelAgentTools({ cfg: options?.config }) : []),
     ...(includeOpenClawTools
@@ -927,6 +1009,9 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     getPluginToolMeta(tool),
   );
   options?.recordToolPrepStage?.("authorization-policy");
+  const memoryEgressGuarded = memoryIsolated
+    ? authorizedTools.map((tool) => wrapToolWithMemoryEgressPolicy(tool, memoryInvocationToken))
+    : authorizedTools;
   const turnSourceChannel = options?.messageChannel ?? options?.messageProvider;
   const turnSourceTo = options?.currentMessagingTarget ?? options?.currentChannelId;
   const requester = {
@@ -965,7 +1050,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   };
   // NOTE: Keep canonical (lowercase) tool names here. Provider transports remap on the wire.
   return finalizeAgentTools({
-    tools: authorizedTools,
+    tools: memoryEgressGuarded,
     modelProvider: options?.modelProvider,
     modelId: options?.modelId,
     modelCompat: options?.modelCompat,

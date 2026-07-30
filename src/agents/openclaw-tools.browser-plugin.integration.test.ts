@@ -129,7 +129,7 @@ describe("createOpenClawTools browser plugin integration", () => {
             allow: ["browser"],
           },
         } as OpenClawConfig,
-        fsPolicy: { workspaceOnly: true },
+        fsPolicy: { kind: "workspace", workspaceOnly: true },
       },
       resolvedConfig: {
         plugins: {

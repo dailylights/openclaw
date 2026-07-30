@@ -2,6 +2,10 @@
  * Resolves workspace, sandbox, provider runtime, and phase reporting for an embedded attempt.
  */
 import fs from "node:fs/promises";
+import {
+  getMemoryVirtualFilesystemView,
+  isMemoryInvocationEnforced,
+} from "../../../plugins/memory-invocation.js";
 import { isPluginMetadataSnapshotCompatible } from "../../../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import {
@@ -34,6 +38,7 @@ type AttemptWorkspaceParams = Pick<
   | "config"
   | "cwd"
   | "execOverrides"
+  | "memoryInvocationToken"
   | "sandboxSessionKey"
   | "sessionId"
   | "sessionKey"
@@ -46,11 +51,25 @@ export async function resolveAttemptWorkspaceSandbox(params: AttemptWorkspacePar
   await fs.mkdir(resolvedWorkspace, { recursive: true });
   const sandboxSessionKey =
     params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId;
+  const memoryVirtualView = getMemoryVirtualFilesystemView(params.memoryInvocationToken);
   const sandbox = await resolveSandboxContext({
     config: params.config,
     execOverrides: params.execOverrides,
     sessionKey: sandboxSessionKey,
     workspaceDir: resolvedWorkspace,
+    ...(isMemoryInvocationEnforced(params.memoryInvocationToken)
+      ? { excludeControlledMemory: true }
+      : {}),
+    ...(memoryVirtualView
+      ? {
+          memoryVirtualMounts: memoryVirtualView.roots.map((root) => ({
+            viewId: memoryVirtualView.viewId,
+            virtualRoot: root.virtualRoot,
+            mountHandle: root.mountHandle,
+            sourcePath: root.sourcePath,
+          })),
+        }
+      : {}),
   });
   const effectiveWorkspace =
     sandbox?.enabled && sandbox.workspaceAccess !== "rw" ? sandbox.workspaceDir : resolvedWorkspace;

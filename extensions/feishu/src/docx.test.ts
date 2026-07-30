@@ -739,7 +739,7 @@ describe("feishu_doc image fetch hardening", () => {
 
     const feishuDocTool = resolveFeishuDocTool({
       workspaceDir: WORKSPACE_ROOT,
-      fsPolicy: { workspaceOnly: true },
+      fsPolicy: { kind: "workspace", workspaceOnly: true },
     });
 
     await executeFeishuDocTool(feishuDocTool, {
@@ -766,7 +766,7 @@ describe("feishu_doc image fetch hardening", () => {
     });
 
     const feishuDocTool = resolveFeishuDocTool({
-      fsPolicy: { workspaceOnly: true },
+      fsPolicy: { kind: "workspace", workspaceOnly: true },
     });
 
     await executeFeishuDocTool(feishuDocTool, {
@@ -787,7 +787,7 @@ describe("feishu_doc image fetch hardening", () => {
 
     const feishuDocTool = resolveFeishuDocTool({
       workspaceDir: WORKSPACE_ROOT,
-      fsPolicy: { workspaceOnly: true },
+      fsPolicy: { kind: "workspace", workspaceOnly: true },
     });
 
     await executeFeishuDocTool(feishuDocTool, {
@@ -918,7 +918,7 @@ describe("feishu_doc image fetch hardening", () => {
 
     const feishuDocTool = resolveFeishuDocTool({
       workspaceDir: WORKSPACE_ROOT,
-      fsPolicy: { workspaceOnly: true },
+      fsPolicy: { kind: "workspace", workspaceOnly: true },
     });
 
     try {

@@ -62,13 +62,21 @@ import { DEFAULT_SANDBOX_IMAGE, SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./const
 import { handleHotSandboxConfigMismatch } from "./current-config.js";
 import { readRegistryEntry, removeRegistryEntry, updateRegistry } from "./registry.js";
 import { buildSandboxContainerName, slugifySessionKey } from "./shared.js";
-import type { SandboxConfig, SandboxDockerConfig, SandboxWorkspaceAccess } from "./types.js";
+import type {
+  SandboxConfig,
+  SandboxDockerConfig,
+  SandboxMemoryVirtualMount,
+  SandboxWorkspaceAccess,
+} from "./types.js";
 import { validateSandboxSecurity } from "./validate-sandbox-security.js";
 import {
+  appendMemoryVirtualMountArgs,
   appendReadOnlyWorkspaceSkillMountArgs,
   appendWorkspaceMountArgs,
   filterBindsConflictingWithProtectedMounts,
+  formatMemoryVirtualMountHashState,
   formatReadOnlyWorkspaceSkillMountHashState,
+  resolveMemoryVirtualMountContainerPaths,
   resolveReadOnlyWorkspaceSkillMounts,
   resolveProtectedSkillMountContainerPaths,
   SANDBOX_MOUNT_FORMAT_VERSION,
@@ -466,6 +474,7 @@ async function createSandboxContainer(params: {
   configHash?: string;
   readOnlyWorkspaceSkillMounts: readonly ReadOnlyWorkspaceSkillMount[];
   podmanRuntimeInfo?: PodmanSandboxRuntimeInfo;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
 }) {
   const { engine, name, cfg, workspaceDir, scopeKey } = params;
   const podmanPolicy =
@@ -505,22 +514,37 @@ async function createSandboxContainer(params: {
     readOnlyWorkspaceSkillMounts: params.readOnlyWorkspaceSkillMounts,
     includeReadOnlyWorkspaceSkillMounts: false,
   });
-  // Protected skill overlays are authoritative. Remove exact destination
-  // collisions before Docker or Podman sees duplicate mount arguments.
+  // Managed read-only mounts own their exact destinations. Skip custom conflicts
+  // so Docker/Podman cannot reject duplicates or shadow the authorized view.
   const protectedPaths = resolveProtectedSkillMountContainerPaths(
     params.readOnlyWorkspaceSkillMounts,
   );
+  for (const containerPath of resolveMemoryVirtualMountContainerPaths({
+    mounts: params.memoryVirtualMounts ?? [],
+    workdir: cfg.workdir,
+  })) {
+    protectedPaths.add(containerPath);
+  }
   let safeBinds = cfg.binds;
   if (protectedPaths.size > 0 && cfg.binds?.length) {
     safeBinds = filterBindsConflictingWithProtectedMounts(cfg.binds, protectedPaths);
     const skipped = cfg.binds.filter((b) => !safeBinds!.includes(b));
     for (const bind of skipped) {
       log.warn(
-        `sandbox: skipping user bind "${bind}" — container path conflicts with a protected read-only skill mount`,
+        `sandbox: skipping user bind "${bind}" — container path conflicts with a protected read-only mount`,
       );
     }
   }
   appendCustomBinds(args, safeBinds ? { ...cfg, binds: safeBinds } : cfg);
+  if (params.memoryVirtualMounts?.length) {
+    // Keep authorization-specific mounts after operator-configured binds so a
+    // broad custom workspace overlay cannot replace the opaque handle view.
+    appendMemoryVirtualMountArgs({
+      args,
+      workdir: cfg.workdir,
+      mounts: params.memoryVirtualMounts,
+    });
+  }
   appendReadOnlyWorkspaceSkillMountArgs({
     args,
     readOnlyWorkspaceSkillMounts: params.readOnlyWorkspaceSkillMounts,
@@ -549,6 +573,7 @@ type EnsureSandboxContainerParams = {
   workspaceDir: string;
   agentWorkspaceDir: string;
   skillsWorkspaceDir?: string;
+  memoryVirtualMounts?: readonly SandboxMemoryVirtualMount[];
   cfg: SandboxConfig;
   requireCurrentConfig?: boolean;
 };
@@ -627,6 +652,14 @@ async function ensureSandboxContainerLifecycle(
     readOnlyWorkspaceSkillMounts: formatReadOnlyWorkspaceSkillMountHashState(
       readOnlyWorkspaceSkillMounts,
     ),
+    ...(params.memoryVirtualMounts?.length
+      ? {
+          memoryVirtualMounts: formatMemoryVirtualMountHashState(
+            params.memoryVirtualMounts,
+            params.cfg.docker.workdir,
+          ),
+        }
+      : {}),
   });
   const expectedHash =
     engine.id === "podman"
@@ -653,6 +686,7 @@ async function ensureSandboxContainerLifecycle(
       const lastUsedAtMs = registryEntry?.lastUsedAtMs;
       const isHot =
         running &&
+        !params.memoryVirtualMounts?.length &&
         (typeof lastUsedAtMs !== "number" || now - lastUsedAtMs < HOT_CONTAINER_WINDOW_MS);
       if (isHot) {
         handleHotSandboxConfigMismatch({
@@ -684,6 +718,7 @@ async function ensureSandboxContainerLifecycle(
       configHash: expectedHash,
       readOnlyWorkspaceSkillMounts,
       podmanRuntimeInfo,
+      memoryVirtualMounts: params.memoryVirtualMounts,
     });
   } else if (!running) {
     await execContainer(engine, ["start", containerName]);
