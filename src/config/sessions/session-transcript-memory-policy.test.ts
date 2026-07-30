@@ -11,6 +11,7 @@ import {
 import { readSessionArchiveContentSync } from "./archive-compression.js";
 import {
   appendTranscriptMessage,
+  forkSessionAtMessage,
   forkSessionFromParentTranscript,
   loadTranscriptEvents,
   readCurrentSessionMemorySubject,
@@ -32,6 +33,7 @@ import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite
 import {
   createTranscriptMemoryPolicyRewriteBinding,
   replaceSqliteTranscriptEventsInTransaction,
+  rewriteSqliteTranscriptEventRowsInTransaction,
 } from "./session-accessor.sqlite-transcript-store.js";
 import { replaceSqliteTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionMemorySubjectLineageSeed } from "./session-memory-subject.js";
@@ -607,6 +609,90 @@ describe("transcript memory policy", () => {
     ]);
   });
 
+  it("forks a cutover session from only visible source rows and retains their companions", async () => {
+    const scope = await createScope("message-cut-fork");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "message-cut-user-1",
+      message: { role: "user", content: "first visible prompt" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "message-cut-assistant-1",
+      message: { role: "assistant", content: "first visible response" },
+      parentId: "message-cut-user-1",
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "message-cut-user-2",
+      message: { role: "user", content: "edited prompt" },
+      parentId: "message-cut-assistant-1",
+    });
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2, 3]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+
+    const originalStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = scope.env.OPENCLAW_STATE_DIR;
+    try {
+      const fork = await forkSessionAtMessage({
+        agentId: scope.agentId,
+        env: scope.env,
+        entryId: "message-cut-user-2",
+        sessionKey: scope.sessionKey,
+        targetKey: `agent:${scope.agentId}:dashboard:message-cut-child`,
+      });
+      if (fork.status !== "created") {
+        throw new Error("expected cutover message fork");
+      }
+
+      expect(
+        (
+          await loadTranscriptEvents({
+            agentId: scope.agentId,
+            env: scope.env,
+            sessionId: fork.entry.sessionId,
+            sessionKey: fork.key,
+          })
+        ).map((event) => (event as { id?: string }).id),
+      ).toEqual(["message-cut-user-1", "message-cut-assistant-1"]);
+      expect(
+        database.db
+          .prepare(
+            `SELECT p.authorization_status, l.source_event_seq, l.source_session_id, l.transition_kind
+               FROM transcript_event_memory_policies p
+               JOIN transcript_event_memory_policy_lineage l
+                 ON l.session_id = p.session_id AND l.event_seq = p.event_seq
+              WHERE p.session_id = ?
+              ORDER BY p.event_seq ASC`,
+          )
+          .all(fork.entry.sessionId),
+      ).toEqual([
+        {
+          authorization_status: "authorized",
+          source_event_seq: 1,
+          source_session_id: scope.sessionId,
+          transition_kind: "fork",
+        },
+        {
+          authorization_status: "authorized",
+          source_event_seq: 2,
+          source_session_id: scope.sessionId,
+          transition_kind: "fork",
+        },
+      ]);
+    } finally {
+      if (originalStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = originalStateDir;
+      }
+    }
+  });
+
   it("persists immutable policy lineage with an archive before reclaiming source rows", async () => {
     const scope = await createScope("archive-lineage");
     await upsertSessionEntry(scope, {
@@ -1126,6 +1212,69 @@ describe("transcript memory policy", () => {
       { authorization_status: "pending", event_seq: 2 },
     ]);
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("makes a changed in-place transcript row pending until it receives new policy evidence", async () => {
+    const scope = await createScope("exact-rewrite-pending");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "rewrite-message",
+      message: { content: "original bytes", role: "user" },
+    });
+    const database = insertCutover(scope);
+    insertPolicyFixture({ scope, eventSeq: 0 });
+    insertPolicyFixture({ scope, eventSeq: 1 });
+    const source = database.db
+      .prepare(
+        `SELECT event_json, seq
+           FROM transcript_events
+          WHERE session_id = ? AND seq = 1`,
+      )
+      .get(scope.sessionId) as { event_json: string; seq: number };
+    const resolved = resolveSqliteScope(scope);
+
+    runOpenClawAgentWriteTransaction((writeDatabase) => {
+      rewriteSqliteTranscriptEventRowsInTransaction(
+        writeDatabase,
+        { ...resolved, sessionId: scope.sessionId },
+        [
+          {
+            event: {
+              id: "rewrite-message",
+              message: { content: "rewritten bytes", role: "user" },
+              parentId: null,
+              type: "message",
+            },
+            expectedEventJson: source.event_json,
+            seq: source.seq,
+          },
+        ],
+      );
+    }, toDatabaseOptions(resolved));
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status, source_policy_set_id
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending", source_policy_set_id: null });
+    expect(
+      database.db
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM transcript_event_memory_policy_details
+            WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ count: 0 });
+    await expect(loadTranscriptEvents(scope)).resolves.toHaveLength(1);
   });
 
   it("does not expose an unlabeled row through the transcript write lock or derive from it", async () => {

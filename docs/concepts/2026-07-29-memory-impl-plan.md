@@ -1325,21 +1325,21 @@ Add:
 
 Phase 2B is complete only when all of the following are demonstrated:
 
-- [ ] Every readable user, assistant, tool-result, summary, checkpoint, and
+- [x] Every readable user, assistant, tool-result, summary, checkpoint, and
       system event has an atomic, evaluable policy companion row.
-- [ ] Every scoped exposure can be mapped to the durable events, policy-set
+- [x] Every scoped exposure can be mapped to the durable events, policy-set
       revision, delivery audience, and run exposure revision it influenced.
-- [ ] Stable policy IDs are revalidated against current active revisions and
+- [x] Stable policy IDs are revalidated against current active revisions and
       revocation epochs; captured historical allows are not permanent grants.
-- [ ] Reset, rollover, fork, rewind, checkpoint restore, archive, export, and
+- [x] Reset, rollover, fork, rewind, checkpoint restore, archive, export, and
       confirmed import preserve subject and policy lineage exactly.
-- [ ] Missing, invalid, stale, or authorization-pending labels exclude events
+- [x] Missing, invalid, stale, or authorization-pending labels exclude events
       from replay, search, compaction, export, and derivation.
-- [ ] Authorization is never reconstructed from session-key shape, transcript
+- [x] Authorization is never reconstructed from session-key shape, transcript
       JSON, rendered prompt text, or `InputProvenance`.
-- [ ] No plugin call or async work occurs inside the transcript commit
+- [x] No plugin call or async work occurs inside the transcript commit
       transaction.
-- [ ] Atomic-write, transition, policy-revision, revoke-race, session-rebound,
+- [x] Atomic-write, transition, policy-revision, revoke-race, session-rebound,
       and legacy-unlabeled transcript tests pass.
 
 ### Rollback

@@ -39,6 +39,7 @@ import {
 import {
   captureAuthorizedTranscriptMemoryPoliciesInTransaction,
   copyTranscriptMemoryPolicyInTransaction,
+  invalidateTranscriptMemoryPolicyInTransaction,
   readAuthorizedTranscriptEventSeqs,
   recordTranscriptMemoryPolicyInTransaction,
   recordTranscriptCompactionPolicyInTransaction,
@@ -637,6 +638,13 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
         `Transcript row ${resolved.sessionId}:${row.seq} changed before exact rewrite`,
       );
     }
+    if (JSON.stringify(persistedEvent) !== row.expectedEventJson) {
+      invalidateTranscriptMemoryPolicyInTransaction({
+        database,
+        eventSeq: row.seq,
+        sessionId: resolved.sessionId,
+      });
+    }
   }
   rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
   touchTranscriptMutationInTransaction(database, resolved.sessionId);
@@ -664,6 +672,11 @@ export function updateSqliteTranscriptEventJsonInTransaction(
         .where("session_id", "=", sessionId)
         .where("seq", "=", seq),
     );
+    invalidateTranscriptMemoryPolicyInTransaction({
+      database,
+      eventSeq: seq,
+      sessionId,
+    });
   }
   rotateTranscriptGenerationInTransaction(database, sessionId);
   deleteSessionTranscriptIndexInTransaction(database.db, sessionId);

@@ -18,7 +18,7 @@ import {
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
 import { emitCommittedSessionIdentityDiff } from "./session-accessor.sqlite-identity.js";
-import { loadSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
+import { loadVisibleSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
   getSessionKysely,
   normalizeSqliteSessionKey,
@@ -124,7 +124,7 @@ function loadSessionBranchSummaries(
   }
 
   const branches = summarizeSessionBranches(
-    loadSqliteTranscriptEventsFromDatabase(database, sessionId),
+    loadVisibleSqliteTranscriptEventsFromDatabase(database, sessionId),
   );
   sessionBranchCache.delete(cacheKey);
   sessionBranchCache.set(cacheKey, { ...watermark, branches });
@@ -277,7 +277,9 @@ function mutateSqliteSessionAtMessageInTransaction(
   if (!memorySubjectSeed) {
     return { status: "failed" };
   }
-  const events = loadSqliteTranscriptEventsFromDatabase(database, currentEntry.sessionId);
+  // Pending, stale, and unlabeled rows must not be copied into a new branch.
+  // Copied visible rows retain only their source-bound policy companions.
+  const events = loadVisibleSqliteTranscriptEventsFromDatabase(database, currentEntry.sessionId);
   const cut = params.mode === "switch" ? undefined : resolveMessageCut(events, params.entryId);
   if (cut && "status" in cut) {
     return cut;

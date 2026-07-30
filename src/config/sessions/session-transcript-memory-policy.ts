@@ -1286,6 +1286,50 @@ export function recordTranscriptMemoryPolicyInTransaction(params: {
   return isStoredTranscriptEventAuthorized(database.db, params.sessionId, params.eventSeq);
 }
 
+/** A changed raw event has no source-bound authorization until a new policy is established. */
+export function invalidateTranscriptMemoryPolicyInTransaction(params: {
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+  eventSeq: number;
+}): void {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return;
+  }
+  const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .deleteFrom("transcript_event_memory_policy_details")
+      .where("session_id", "=", params.sessionId)
+      .where("event_seq", "=", params.eventSeq),
+  );
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .deleteFrom("transcript_event_memory_policy_lineage")
+      .where("session_id", "=", params.sessionId)
+      .where("event_seq", "=", params.eventSeq),
+  );
+  executeSqliteQuerySync(
+    params.database.db,
+    db
+      .updateTable("transcript_event_memory_policies")
+      .set({
+        authorization_status: "pending",
+        context_fingerprint: null,
+        delivery_audiences_json: null,
+        run_exposure_revision: null,
+        run_exposure_set_id: null,
+        run_id: null,
+        session_identity_revision: null,
+        source_policy_set_id: null,
+        subject_revision: null,
+      })
+      .where("session_id", "=", params.sessionId)
+      .where("event_seq", "=", params.eventSeq),
+  );
+}
+
 /** Records the summary's authoritative source companions before exposing a compaction event. */
 export function recordTranscriptCompactionPolicyInTransaction(params: {
   compactionId: string;
