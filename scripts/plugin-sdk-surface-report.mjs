@@ -226,7 +226,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: simple channel secret contract factory replacing repeated collectors.
       // +45: multiplayer-memory authorization shapes, runtime contract, and conformance types.
       // +1: multiplayer-memory search handles.
-      4881,
+      // +2: multiplayer-memory prepared transcript-policy contracts.
+      4883,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(

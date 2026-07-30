@@ -8,10 +8,7 @@ vi.mock("../plugins/memory-cutover.js", () => ({
   isMemoryIsolationCutoverAgent: hoisted.isMemoryIsolationCutoverAgent,
 }));
 
-import {
-  resolveScopedMemoryDelegationDenial,
-  SCOPED_MEMORY_DELEGATION_UNAVAILABLE_REASON,
-} from "./scoped-memory-delegation.js";
+import { resolveScopedMemoryDelegationDenial } from "./scoped-memory-delegation.js";
 
 describe("resolveScopedMemoryDelegationDenial", () => {
   beforeEach(() => {
@@ -39,7 +36,9 @@ describe("resolveScopedMemoryDelegationDenial", () => {
           requesterAgentId: "main",
           targetAgentId: "reviewer",
         }),
-      ).toBe(SCOPED_MEMORY_DELEGATION_UNAVAILABLE_REASON);
+      ).toBe(
+        "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.",
+      );
     },
   );
 

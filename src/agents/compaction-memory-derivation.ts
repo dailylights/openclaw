@@ -1,6 +1,6 @@
 import { isMemoryIsolationCutoverAgent } from "../plugins/memory-cutover.js";
 
-export const SCOPED_MEMORY_COMPACTION_DERIVATION_UNAVAILABLE_REASON =
+const SCOPED_MEMORY_COMPACTION_DERIVATION_UNAVAILABLE_REASON =
   "Compaction is unavailable because scoped-memory derivation is not yet authorized.";
 
 /**

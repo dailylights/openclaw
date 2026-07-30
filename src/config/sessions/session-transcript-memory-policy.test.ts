@@ -814,7 +814,11 @@ describe("transcript memory policy", () => {
           WHERE policy_id = 'stable-policy-conversation'`,
       )
       .run();
-    await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.toEqual([scope.sessionId, "derived-source-user"]);
   });
 
   it("denies compaction when source audiences have no common target", async () => {

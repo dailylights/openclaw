@@ -131,7 +131,7 @@ export type MemoryRevisionPolicyRequirementRow = {
   created_at: number;
 };
 
-export type MemoryLineageEdgeRow = {
+type MemoryLineageEdgeRow = {
   child_revision_id: string;
   parent_revision_id: string;
   edge_kind: "revision" | "derive" | "project" | "publish";

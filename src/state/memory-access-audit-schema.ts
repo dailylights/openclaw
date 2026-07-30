@@ -18,9 +18,9 @@ function extractMemoryAccessAuditSchema(): string {
 }
 
 /** Canonical lazy shared schema for redacted multiplayer-memory audit delivery. */
-export const MEMORY_ACCESS_AUDIT_SCHEMA_SQL = extractMemoryAccessAuditSchema();
+const MEMORY_ACCESS_AUDIT_SCHEMA_SQL = extractMemoryAccessAuditSchema();
 
-export type MemoryAccessAuditEntry = Readonly<{
+type MemoryAccessAuditEntry = Readonly<{
   eventId: string;
   agentId: string;
   requestId: string;
@@ -55,7 +55,7 @@ type MemoryAccessAuditDatabase = {
 };
 
 /** Install the idempotent audit sink only when a scoped-memory writer needs it. */
-export function ensureMemoryAccessAuditSchema(db: DatabaseSync): void {
+function ensureMemoryAccessAuditSchema(db: DatabaseSync): void {
   if (ensuredDatabases.has(db)) {
     return;
   }

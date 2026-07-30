@@ -1242,7 +1242,7 @@ export type TranscriptMemoryPolicyExportManifest = Readonly<{
   sessionId: string;
 }>;
 
-export type TranscriptMemoryPolicyExportEvent = Readonly<{
+type TranscriptMemoryPolicyExportEvent = Readonly<{
   contentSha256: string;
   eventSeq: number;
   preserved: PreservedTranscriptMemoryPolicy;

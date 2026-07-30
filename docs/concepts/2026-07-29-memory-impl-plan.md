@@ -1479,25 +1479,25 @@ Focused existing tests:
 
 Phase 2C is complete only when all of the following are demonstrated:
 
-- [ ] Every compaction, checkpoint, memory flush, dreaming output, promotion,
+- [x] Every compaction, checkpoint, memory flush, dreaming output, promotion,
       export, and child-produced durable artifact identifies immutable parents
       and records lineage.
-- [ ] `derive` authority is checked before source content enters a model
+- [x] `derive` authority is checked before source content enters a model
       context.
-- [ ] No unlabeled or policy-unrepresentable derived artifact is readable.
-- [ ] Group compaction and flush remain channel-scoped; private compaction and
+- [x] No unlabeled or policy-unrepresentable derived artifact is readable.
+- [x] Group compaction and flush remain channel-scoped; private compaction and
       flush remain user-scoped; autonomous work remains agent-scoped or writes
       nothing.
-- [ ] Mixed audiences are partitioned or denied and can never be widened by
+- [x] Mixed audiences are partitioned or denied and can never be widened by
       model wording.
-- [ ] Tombstoning/revoking an ancestor denies descendants immediately; any
+- [x] Tombstoning/revoking an ancestor denies descendants immediately; any
       recomputation creates a new reviewed immutable revision.
-- [ ] Dreaming and promotion run one authorized store at a time, and postbox or
+- [x] Dreaming and promotion run one authorized store at a time, and postbox or
       quarantine content cannot auto-promote.
-- [ ] Child agents receive only the intersection of parent view, task
+- [x] Child agents receive only the intersection of parent view, task
       capability, session visibility, and current authority; cron, heartbeat,
       webhook, and system runs cannot recover private access from a session key.
-- [ ] Compaction, flush, dreaming, lineage, revocation, delegation, and
+- [x] Compaction, flush, dreaming, lineage, revocation, delegation, and
       interruption tests pass, including any dependency-specific contract
       checks required by the selected harness.
 

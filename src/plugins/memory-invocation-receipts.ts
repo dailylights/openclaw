@@ -55,7 +55,7 @@ export type TranscriptMemoryRunExposureSnapshot = Readonly<{
   createdAt: number;
 }>;
 
-export type MemoryVirtualFilesystemRoot = Readonly<{
+type MemoryVirtualFilesystemRoot = Readonly<{
   virtualRoot: "private" | "channel" | "shared" | "projections" | "postbox-review";
   mountHandle: string;
   sourcePath: string;

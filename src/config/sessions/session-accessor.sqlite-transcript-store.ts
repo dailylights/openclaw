@@ -56,7 +56,7 @@ import {
 import { resolveVisibleTranscriptAppendParentId } from "./transcript-visible-events.js";
 
 /** Immutable source-row binding for a maintenance rewrite that retains an existing companion. */
-export type TranscriptMemoryPolicyRewriteBinding = Readonly<{
+type TranscriptMemoryPolicyRewriteBinding = Readonly<{
   sourceContentSha256: string;
   sourceEventSeq: number;
   targetEventIndex: number;

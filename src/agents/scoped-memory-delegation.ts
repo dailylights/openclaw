@@ -1,6 +1,6 @@
 import { isMemoryIsolationCutoverAgent } from "../plugins/memory-cutover.js";
 
-export const SCOPED_MEMORY_DELEGATION_UNAVAILABLE_REASON =
+const SCOPED_MEMORY_DELEGATION_UNAVAILABLE_REASON =
   "Subagent delegation is unavailable because scoped-memory delegation is not yet authorized.";
 
 /**

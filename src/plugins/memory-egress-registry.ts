@@ -6,7 +6,7 @@
  * a later phase adds an audience-bound delivery capability for each one.
  */
 
-export const MEMORY_EGRESS_CAPABILITY_IDS = [
+const MEMORY_EGRESS_CAPABILITY_IDS = [
   "browser.control",
   "fanout.send",
   "file.delivery",
@@ -21,7 +21,7 @@ export const MEMORY_EGRESS_CAPABILITY_IDS = [
   "webhook.call",
 ] as const;
 
-export type MemoryEgressCapabilityId = (typeof MEMORY_EGRESS_CAPABILITY_IDS)[number];
+type MemoryEgressCapabilityId = (typeof MEMORY_EGRESS_CAPABILITY_IDS)[number];
 
 const CAPABILITY_BY_TOOL_NAME: Readonly<Record<string, MemoryEgressCapabilityId>> = {
   browser: "browser.control",
