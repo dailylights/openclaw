@@ -1968,7 +1968,9 @@ export function createBuiltinScopedMemoryRuntime(
   const importAuthorized = async (params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;
-    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" }>;
+    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" | "deposit" }> & {
+      kind: "import";
+    };
   }): Promise<MemoryWriteResult> => await writeAuthorized(params);
 
   const syncAuthorized = async (params: {

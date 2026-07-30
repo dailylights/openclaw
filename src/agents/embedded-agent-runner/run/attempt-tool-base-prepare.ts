@@ -324,6 +324,10 @@ export function prepareEmbeddedAttemptToolBase(params: {
   const memoryIsolatedTools = isMemoryInvocationEnforced(attempt.memoryInvocationToken)
     ? constructedToolsRaw.filter((tool) => {
         const name = tool.name.toLowerCase();
+        const isAuthorizedMemoryFlushWrite = attempt.trigger === "memory" && name === "write";
+        if (isAuthorizedMemoryFlushWrite) {
+          return true;
+        }
         return !(
           [
             "write",

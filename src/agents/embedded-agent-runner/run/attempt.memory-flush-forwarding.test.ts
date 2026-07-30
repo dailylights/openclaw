@@ -8,6 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { AnyAgentTool } from "../../agent-tools.types.js";
 import { buildEmbeddedAttemptToolRunContext } from "./attempt.tool-run-context.js";
 
+const rememberAuthorizedMemoryForInvocationMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../../plugins/memory-invocation.js", () => ({
+  rememberAuthorizedMemoryForInvocation: rememberAuthorizedMemoryForInvocationMock,
+}));
+
 const MEMORY_RELATIVE_PATH = "memory/2026-03-24.md";
 
 function createAttemptParams(workspaceDir: string) {
@@ -110,5 +116,50 @@ describe("runEmbeddedAttempt memory flush tool forwarding", () => {
     } finally {
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
+  });
+
+  it("rebinds enforced memory flush writes to the authorized broker without a path", async () => {
+    const { wrapToolMemoryFlushAuthorizedWrite } = await import("../../agent-tools.read.js");
+    const fallbackWrite = vi.fn(async () => {
+      throw new Error("authorized wrapper should not delegate to the base write tool");
+    });
+    const writeTool: AnyAgentTool = {
+      name: "write",
+      label: "write",
+      description: "Write content to a file.",
+      parameters: { type: "object", properties: {} },
+      execute: fallbackWrite,
+    };
+    const token = {} as never;
+    rememberAuthorizedMemoryForInvocationMock.mockReset().mockResolvedValue({
+      status: "committed",
+      committedAt: "2026-07-30T12:00:00.000Z",
+    });
+    const wrapped = wrapToolMemoryFlushAuthorizedWrite(writeTool, {
+      memoryInvocationToken: token,
+    });
+
+    expect(wrapped.parameters).toMatchObject({
+      required: ["content"],
+      properties: { content: { type: "string" } },
+    });
+    await expect(
+      wrapped.execute("call-authorized-flush", { content: "durable note" }),
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: "Recorded durable memory." }],
+      details: { authorizedMemory: true, status: "committed" },
+    });
+    expect(rememberAuthorizedMemoryForInvocationMock).toHaveBeenCalledWith({
+      token,
+      content: "durable note",
+      toolCallId: "call-authorized-flush",
+    });
+    await expect(
+      wrapped.execute("call-authorized-flush-path", {
+        path: MEMORY_RELATIVE_PATH,
+        content: "durable note",
+      }),
+    ).rejects.toThrow("Authorized memory flush does not accept a filesystem path.");
+    expect(fallbackWrite).not.toHaveBeenCalled();
   });
 });

@@ -94,6 +94,18 @@ type UpdateSessionEntryParams = {
 const MAX_VISIBLE_MEMORY_FLUSH_ERROR_CHARS = 600;
 const MAX_FLUSH_FAILURES = 3;
 const MAX_FLUSH_ERROR_LENGTH = 200;
+const AUTHORIZED_MEMORY_FLUSH_PROMPT = [
+  "Pre-compaction memory flush.",
+  "Capture durable memories with the write tool.",
+  "The authorized memory store is selected from the current session subject; provide content only and never a filesystem path.",
+  "If nothing should be stored, reply with NO_REPLY.",
+].join(" ");
+const AUTHORIZED_MEMORY_FLUSH_SYSTEM_PROMPT = [
+  "Pre-compaction memory flush turn.",
+  "The session is near auto-compaction; record durable memories only through the authorized write tool.",
+  "The tool selects the store from the current session subject and does not accept filesystem paths.",
+  "You may reply, but usually NO_REPLY is correct.",
+].join(" ");
 
 const embeddedAgentRuntimeLoader = createLazyImportLoader<EmbeddedAgentRuntime>(
   () => import("../../agents/embedded-agent.js"),
@@ -1035,15 +1047,18 @@ export async function runMemoryFlushIfNeeded(params: {
   const memoryAgentId = params.sessionKey
     ? resolveAgentIdFromSessionKey(params.sessionKey, configuredAgentId)
     : configuredAgentId;
-  if (isMemoryIsolationCutoverAgent(memoryAgentId)) {
-    return { sessionEntry: params.sessionEntry, outcome: "skipped" };
-  }
+  const usesAuthorizedMemoryFlush = isMemoryIsolationCutoverAgent(memoryAgentId);
   const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg });
   if (!memoryFlushPlan) {
     return { sessionEntry: params.sessionEntry, outcome: "skipped" };
   }
 
   const memoryFlushWritable = (() => {
+    // The authorized path commits through the broker, never the workspace.
+    // Keep the sandbox write gate only for legacy file-backed flushes.
+    if (usesAuthorizedMemoryFlush) {
+      return true;
+    }
     if (!params.sessionKey) {
       return true;
     }
@@ -1287,29 +1302,36 @@ export async function runMemoryFlushIfNeeded(params: {
       cfg: params.cfg,
       nowMs: memoryFlushNowMs,
     }) ?? memoryFlushPlan;
-  const memoryFlushWritePath = activeMemoryFlushPlan.relativePath;
-  await memoryDeps.ensureMemoryFlushTargetFile({
-    workspaceDir: params.followupRun.run.workspaceDir,
-    relativePath: memoryFlushWritePath,
-  });
-  const memoryFlushAbsolutePath = path.join(
-    params.followupRun.run.workspaceDir,
-    memoryFlushWritePath,
-  );
-  const readMemoryFlushContent = () =>
-    fs.promises.readFile(memoryFlushAbsolutePath, "utf8").catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return "";
-      }
-      throw error;
+  const memoryFlushWritePath = usesAuthorizedMemoryFlush
+    ? undefined
+    : activeMemoryFlushPlan.relativePath;
+  if (memoryFlushWritePath) {
+    await memoryDeps.ensureMemoryFlushTargetFile({
+      workspaceDir: params.followupRun.run.workspaceDir,
+      relativePath: memoryFlushWritePath,
     });
+  }
+  const memoryFlushAbsolutePath = memoryFlushWritePath
+    ? path.join(params.followupRun.run.workspaceDir, memoryFlushWritePath)
+    : undefined;
+  const readMemoryFlushContent = () =>
+    memoryFlushAbsolutePath
+      ? fs.promises.readFile(memoryFlushAbsolutePath, "utf8").catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return "";
+          }
+          throw error;
+        })
+      : Promise.resolve("");
   // Capture one baseline before any write can start. Per-write snapshots can
   // pair a failed later write with an earlier success and miss mixed content.
   const memoryFlushContentBefore = await readMemoryFlushContent();
   let memoryFlushWroteTarget = false;
   const flushSystemPrompt = [
     params.followupRun.run.extraSystemPrompt,
-    activeMemoryFlushPlan.systemPrompt,
+    usesAuthorizedMemoryFlush
+      ? AUTHORIZED_MEMORY_FLUSH_SYSTEM_PROMPT
+      : activeMemoryFlushPlan.systemPrompt,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1397,8 +1419,10 @@ export async function runMemoryFlushIfNeeded(params: {
           allowGatewaySubagentBinding: true,
           silentExpected: true,
           trigger: "memory",
-          memoryFlushWritePath,
-          prompt: activeMemoryFlushPlan.prompt,
+          ...(memoryFlushWritePath ? { memoryFlushWritePath } : {}),
+          prompt: usesAuthorizedMemoryFlush
+            ? AUTHORIZED_MEMORY_FLUSH_PROMPT
+            : activeMemoryFlushPlan.prompt,
           transcriptPrompt: "",
           extraSystemPrompt: flushSystemPrompt,
           isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
@@ -1410,7 +1434,7 @@ export async function runMemoryFlushIfNeeded(params: {
           contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
           onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
           onAgentEvent: (evt) => {
-            if (evt.stream === "tool" && evt.data.name === "write") {
+            if (!usesAuthorizedMemoryFlush && evt.stream === "tool" && evt.data.name === "write") {
               if (evt.data.phase === "result" && evt.data.isError !== true) {
                 memoryFlushWroteTarget = true;
               }
@@ -1433,7 +1457,11 @@ export async function runMemoryFlushIfNeeded(params: {
         return result;
       },
     });
-    if (activeMemoryFlushPlan.recordWriteProvenance && memoryFlushWroteTarget) {
+    if (
+      activeMemoryFlushPlan.recordWriteProvenance &&
+      memoryFlushWritePath &&
+      memoryFlushWroteTarget
+    ) {
       await activeMemoryFlushPlan.recordWriteProvenance({
         workspaceDir: params.followupRun.run.workspaceDir,
         relativePath: memoryFlushWritePath,

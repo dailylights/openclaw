@@ -427,7 +427,9 @@ export interface AuthorizedMemoryRuntime {
   importAuthorized(params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;
-    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" }>;
+    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" | "deposit" }> & {
+      kind: "import";
+    };
   }): Promise<MemoryWriteResult>;
   syncAuthorized(params: {
     context: MemoryAccessContext;

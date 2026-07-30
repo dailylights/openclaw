@@ -42,6 +42,7 @@ import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import { filterToolsByMessageProvider } from "./agent-tools.message-provider-policy.js";
 import {
   wrapReadToolWithMemoryVirtualFilesystem,
+  wrapToolMemoryFlushAuthorizedWrite,
   wrapToolMemoryFlushAppendOnlyWrite,
 } from "./agent-tools.read.js";
 import {
@@ -116,7 +117,7 @@ import {
 } from "./tools/cron-tool.js";
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
 
-const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
+const LEGACY_MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
 
 function resolveMemoryVirtualPathForTool(params: {
   pathname: string;
@@ -411,10 +412,13 @@ type OpenClawCodingToolsOptions = {
 function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions): AnyAgentTool[] {
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
-  if (isMemoryFlushRun && !options?.memoryFlushWritePath) {
+  const usesAuthorizedMemoryFlush =
+    isMemoryFlushRun && isMemoryInvocationEnforced(options?.memoryInvocationToken);
+  if (isMemoryFlushRun && !usesAuthorizedMemoryFlush && !options?.memoryFlushWritePath) {
     throw new Error("memoryFlushWritePath required for memory-triggered tool runs");
   }
-  const memoryFlushWritePath = isMemoryFlushRun ? options.memoryFlushWritePath : undefined;
+  const memoryFlushWritePath =
+    isMemoryFlushRun && !usesAuthorizedMemoryFlush ? options.memoryFlushWritePath : undefined;
   const cronSelfRemoveOnlyJobId =
     options?.trigger === "cron" && options.jobId?.trim() ? options.jobId.trim() : undefined;
   // Prefer the already-resolved sandbox context policy. Recomputing from
@@ -910,13 +914,27 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     options?.swarmCollector && options.swarmOutputSchema
       ? tools.find((tool) => tool.name === "structured_output")
       : undefined;
-  const toolsForMemoryFlush: AnyAgentTool[] = isMemoryFlushRun && memoryFlushWritePath ? [] : tools;
-  if (isMemoryFlushRun && memoryFlushWritePath) {
+  const toolsForMemoryFlush: AnyAgentTool[] = isMemoryFlushRun ? [] : tools;
+  if (isMemoryFlushRun) {
     for (const tool of tools) {
-      if (!MEMORY_FLUSH_ALLOWED_TOOL_NAMES.has(tool.name)) {
+      const allowTool = usesAuthorizedMemoryFlush
+        ? tool.name === "write"
+        : LEGACY_MEMORY_FLUSH_ALLOWED_TOOL_NAMES.has(tool.name);
+      if (!allowTool) {
         continue;
       }
       if (tool.name === "write") {
+        if (usesAuthorizedMemoryFlush && options?.memoryInvocationToken) {
+          toolsForMemoryFlush.push(
+            wrapToolMemoryFlushAuthorizedWrite(tool, {
+              memoryInvocationToken: options.memoryInvocationToken,
+            }),
+          );
+          continue;
+        }
+        if (!memoryFlushWritePath) {
+          continue;
+        }
         toolsForMemoryFlush.push(
           wrapToolMemoryFlushAppendOnlyWrite(tool, {
             root: memoryFlushWriteRoot,
@@ -933,8 +951,9 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
       toolsForMemoryFlush.push(tool);
     }
   }
-  const unavailableCoreToolReason =
-    isMemoryFlushRun && memoryFlushWritePath
+  const unavailableCoreToolReason = usesAuthorizedMemoryFlush
+    ? "memory-triggered compaction runs expose only authorized memory write"
+    : isMemoryFlushRun && memoryFlushWritePath
       ? "memory-triggered compaction runs expose only read and append-only write"
       : undefined;
   const toolsForMessageProvider = filterToolsByMessageProvider(

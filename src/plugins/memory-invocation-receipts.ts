@@ -11,7 +11,10 @@ import type {
 import type { DB as OpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db.generated.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { ensureOpenClawAgentScopedMemorySchema } from "../state/openclaw-agent-scoped-memory-schema.js";
-import type { AdmittedAuthorizedMemoryReadRuntime } from "./memory-authorization-runtime.js";
+import type {
+  AdmittedAuthorizedMemoryReadRuntime,
+  AdmittedAuthorizedMemoryRuntime,
+} from "./memory-authorization-runtime.js";
 import {
   canonicalMemoryAudiencesJson,
   canonicalMemoryStringArrayJson,
@@ -78,7 +81,7 @@ export type MemoryInvocationState = {
   }>;
   context?: MemoryAccessContext;
   plan?: AuthorizedMemoryPlan;
-  runtime?: AdmittedAuthorizedMemoryReadRuntime;
+  runtime?: AdmittedAuthorizedMemoryReadRuntime | AdmittedAuthorizedMemoryRuntime;
   runExposure?: TranscriptMemoryRunExposureSnapshot;
   transcriptPolicy?: PreparedMemoryTranscriptPolicy;
   virtualFilesystem?: MemoryVirtualFilesystemView;

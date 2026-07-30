@@ -23,6 +23,10 @@ import {
   resolveMediaReferenceSandboxPath,
 } from "../media/media-reference.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
+import {
+  rememberAuthorizedMemoryForInvocation,
+  type MemoryInvocationToken,
+} from "../plugins/memory-invocation.js";
 import { clampNumber } from "../utils.js";
 import {
   REQUIRED_PARAM_GROUPS,
@@ -744,6 +748,51 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
           path: options.relativePath,
           appendOnly: true,
         },
+      };
+    },
+  };
+}
+
+/** Rebinds the legacy write name to a subject-selected authorized memory mutation. */
+export function wrapToolMemoryFlushAuthorizedWrite(
+  tool: AnyAgentTool,
+  options: { memoryInvocationToken: MemoryInvocationToken },
+): AnyAgentTool {
+  return {
+    ...tool,
+    description:
+      "Record durable memory for this session. The authorized store is selected automatically; provide content only and never a filesystem path.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "Durable memory to record for the current authorized session subject.",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+    execute: async (toolCallId, args) => {
+      const record = getToolParamsRecord(args);
+      const content = typeof record?.content === "string" ? record.content : undefined;
+      if (!content?.trim()) {
+        throw new Error("Authorized memory flush requires non-empty content.");
+      }
+      if (record && Object.hasOwn(record, "path")) {
+        throw new Error("Authorized memory flush does not accept a filesystem path.");
+      }
+      const result = await rememberAuthorizedMemoryForInvocation({
+        token: options.memoryInvocationToken,
+        content,
+        toolCallId,
+      });
+      if ("unavailable" in result) {
+        throw new Error("Authorized memory flush is unavailable.");
+      }
+      return {
+        content: [{ type: "text", text: "Recorded durable memory." }],
+        details: { authorizedMemory: true, status: result.status },
       };
     },
   };

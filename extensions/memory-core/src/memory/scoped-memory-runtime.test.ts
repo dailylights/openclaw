@@ -242,6 +242,180 @@ describe("builtin authorized scoped memory runtime", () => {
     ).toEqual({ decision: "committed", state: "delivered" });
   });
 
+  it.each([
+    {
+      label: "user",
+      store: {
+        scopeKind: "user" as const,
+        audienceKind: "user" as const,
+        audienceId: "principal-owner",
+        authorityKind: "user" as const,
+        authorityOwnerId: "principal-owner",
+      },
+      context: {},
+    },
+    {
+      label: "conversation",
+      store: {
+        scopeKind: "conversation" as const,
+        audienceKind: "conversation" as const,
+        audienceId: "conversation-1",
+        authorityKind: "conversation" as const,
+        authorityOwnerId: "conversation-1",
+      },
+      context: {
+        subject: {
+          version: 1 as const,
+          kind: "conversation" as const,
+          conversationPrincipalId: "conversation-1",
+          channel: "telegram",
+          accountId: "default",
+        },
+        actor: {
+          kind: "unattributed" as const,
+          transportAuditRef: "transport-audit-1",
+          evidenceRevision: "conversation-evidence-1",
+        },
+        verifiedPrincipals: [],
+        conversation: {
+          conversationPrincipalId: "conversation-1",
+          channel: "telegram",
+          accountId: "default",
+          evidenceRevision: "conversation-evidence-1",
+        },
+        delivery: {
+          sinkKind: "channel" as const,
+          audiences: [{ kind: "conversation" as const, id: "conversation-1" }],
+          egressCapabilityIds: ["reply.final"],
+          egressRegistryRevision: "conversation-egress-1",
+          deliveryRevision: "conversation-delivery-1",
+        },
+      },
+    },
+    ...(["agent", "service"] as const).map((kind) => ({
+      label: kind,
+      store: {
+        scopeKind: "agent" as const,
+        audienceKind: "agent" as const,
+        audienceId: "main",
+        authorityKind: "agent" as const,
+        authorityOwnerId: "main",
+      },
+      context: {
+        subject: { version: 1 as const, kind, principalId: "main" },
+        actor: {
+          kind: "principal" as const,
+          actorKind: kind,
+          principalId: "main",
+          assurance: "service" as const,
+          evidenceRevision: `${kind}-evidence-1`,
+        },
+        verifiedPrincipals: [
+          {
+            principalId: "main",
+            assurance: "service" as const,
+            evidenceRevision: `${kind}-evidence-1`,
+          },
+        ],
+        delivery: {
+          sinkKind: "internal" as const,
+          audiences: [{ kind: "agent" as const, id: "main" }],
+          egressCapabilityIds: ["reply.final"],
+          egressRegistryRevision: `${kind}-egress-1`,
+          deliveryRevision: `${kind}-delivery-1`,
+        },
+      },
+    })),
+  ])(
+    "writes a $label maintenance note only to its subject-selected store",
+    async ({ store, context }) => {
+      const selectedStore = createBuiltinScopedMemoryStore({
+        agentId: "main",
+        ...store,
+        defaultCapabilities: ["append"],
+        actor: { kind: "human", id: "principal-owner" },
+        reason: "maintenance target matrix",
+        nowMs: 1_000,
+      });
+      const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+      const writeContext = createContext({ ...context, operation: "append" });
+      const plan = await runtime.authorize(writeContext);
+      const result = await runtime.writeAuthorized({
+        context: writeContext,
+        plan,
+        mutation: {
+          version: 1,
+          kind: "remember",
+          mutationId: `maintenance-${store.audienceKind}`,
+          idempotencyKey: `maintenance-${store.audienceKind}`,
+          content: "authorized maintenance note",
+          contentType: "markdown",
+        },
+      });
+      const revisionId = result.resourceHandle?.resourceRevision;
+      if (!revisionId) {
+        throw new Error("expected remembered resource revision");
+      }
+      const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+      expect(
+        database
+          .prepare(
+            "SELECT resource.store_id AS store_id FROM memory_resources AS resource INNER JOIN memory_resource_revisions AS revision ON revision.resource_id = resource.resource_id WHERE revision.revision_id = ?",
+          )
+          .get(revisionId),
+      ).toEqual({ store_id: selectedStore.storeId });
+    },
+  );
+
+  it("rejects a maintenance write for an ambiguous subject", async () => {
+    createBuiltinScopedMemoryStore({
+      agentId: "main",
+      scopeKind: "agent",
+      audienceKind: "agent",
+      audienceId: "main",
+      authorityKind: "agent",
+      authorityOwnerId: "main",
+      defaultCapabilities: ["append"],
+      actor: { kind: "human", id: "principal-owner" },
+      reason: "ambiguous maintenance denial",
+      nowMs: 1_000,
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({
+      operation: "append",
+      subject: { version: 1, kind: "ambiguous", reason: "unbound" },
+      actor: {
+        kind: "unattributed",
+        transportAuditRef: "ambiguous-audit-1",
+        evidenceRevision: "ambiguous-evidence-1",
+      },
+      verifiedPrincipals: [],
+      delivery: {
+        sinkKind: "internal",
+        audiences: [{ kind: "agent", id: "main" }],
+        egressCapabilityIds: ["reply.final"],
+        egressRegistryRevision: "ambiguous-egress-1",
+        deliveryRevision: "ambiguous-delivery-1",
+      },
+    });
+    const plan = await runtime.authorize(context);
+
+    await expect(
+      runtime.writeAuthorized({
+        context,
+        plan,
+        mutation: {
+          version: 1,
+          kind: "remember",
+          mutationId: "ambiguous-maintenance",
+          idempotencyKey: "ambiguous-maintenance",
+          content: "must not persist",
+          contentType: "markdown",
+        },
+      }),
+    ).rejects.toThrow("authorized memory mutation is unavailable");
+  });
+
   it.each(["pending", "renamed", "activated", "indexed"] as const)(
     "recovers a valid interrupted write after the %s boundary",
     async (interruptionPoint) => {

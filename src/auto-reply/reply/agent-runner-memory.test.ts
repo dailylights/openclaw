@@ -29,6 +29,12 @@ import { setAgentRunnerMemoryTestDeps } from "./agent-runner-memory.test-support
 import { createTestFollowupRun, writeTestSessionStore } from "./agent-runner.test-fixtures.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("../../plugins/memory-cutover.js", () => cutoverMocks);
+
 const compactEmbeddedAgentSessionMock = vi.fn();
 const runWithModelFallbackMock = vi.fn();
 const runEmbeddedAgentEntryMock = vi.fn();
@@ -246,6 +252,8 @@ describe("runMemoryFlushIfNeeded", () => {
   let rootDir = "";
 
   beforeEach(async () => {
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-unit-"));
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
@@ -470,6 +478,55 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(persisted.sessionId).toBe("session-rotated");
     expect(persisted.compactionCount).toBe(2);
     expect(persisted.memoryFlush).toEqual({ kind: "succeeded", compactionCount: 1 });
+  });
+
+  it("uses the authorized write path after cutover in a read-only sandbox", async () => {
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(true);
+    const sessionEntry: SessionEntry = {
+      sessionId: "authorized-flush-session",
+      updatedAt: Date.now(),
+      totalTokens: 80_000,
+      compactionCount: 1,
+    };
+    const followupRun = createTestFollowupRun();
+
+    await expect(
+      runMemoryFlushIfNeeded({
+        cfg: {
+          agents: {
+            defaults: {
+              sandbox: { mode: "non-main", scope: "agent", workspaceAccess: "ro" },
+              compaction: { memoryFlush: {} },
+            },
+          },
+        },
+        followupRun: {
+          ...followupRun,
+          run: {
+            ...followupRun.run,
+            sessionKey: "agent:main:main",
+            runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
+          },
+        },
+        sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+        defaultModel: "anthropic/claude-opus-4-6",
+        agentCfgContextTokens: 100_000,
+        resolvedVerboseLevel: "off",
+        sessionEntry,
+        sessionStore: { "agent:main:main": sessionEntry },
+        sessionKey: "agent:main:main",
+        runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+
+    const flushCall = requireEmbeddedAgentCall();
+    expect(flushCall.memoryFlushWritePath).toBeUndefined();
+    expect(flushCall.prompt).toContain("authorized memory store");
+    expect(flushCall.prompt).not.toContain("memory/");
+    expect(flushCall.extraSystemPrompt).toContain("does not accept filesystem paths");
+    expect(ensureMemoryFlushTargetFileMock).not.toHaveBeenCalled();
   });
 
   it("records the least-trusted provenance across a multi-write flush", async () => {

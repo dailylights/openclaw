@@ -10,6 +10,8 @@ import type {
   AuthorizedMemoryPlan,
   MemoryAccessContext,
   MemoryActorEvidence,
+  MemoryOperation,
+  MemoryWriteResult,
   VerifiedPrincipalRef,
 } from "../memory-host-sdk/host/authorization.js";
 import type {
@@ -160,6 +162,7 @@ function buildAuthorityFacts(params: {
   agentAccountId?: string;
   messageTo?: string;
   messageThreadId?: string | number;
+  operation?: MemoryOperation;
 }): MemoryAccessContextFacts | undefined {
   const current = readCurrentSessionMemorySubjectAuthority({
     agentId: params.agentId,
@@ -292,7 +295,7 @@ function buildAuthorityFacts(params: {
     },
     collaboration: { kind: "not-applicable" },
     verifiedMemberships: [],
-    operation: "read",
+    operation: params.operation ?? "read",
     hostFactsRevision,
   };
 }
@@ -318,6 +321,7 @@ function revalidateInvocation(token: MemoryInvocationToken, state: MemoryInvocat
     sessionKey: state.sessionKey,
     runId: state.runId,
     ...state.deliveryInput,
+    operation: state.context?.operation,
   });
   if (!facts) {
     return false;
@@ -370,6 +374,7 @@ export async function initializeMemoryInvocation(params: {
   agentAccountId?: string;
   messageTo?: string;
   messageThreadId?: string | number;
+  trigger?: string;
 }): Promise<void> {
   const state = invocationStateByToken.get(params.token);
   if (
@@ -396,7 +401,10 @@ export async function initializeMemoryInvocation(params: {
       ...(params.messageTo !== undefined ? { messageTo: params.messageTo } : {}),
       ...(params.messageThreadId !== undefined ? { messageThreadId: params.messageThreadId } : {}),
     });
-    const facts = buildAuthorityFacts(params);
+    const facts = buildAuthorityFacts({
+      ...params,
+      operation: params.trigger === "memory" ? "append" : "read",
+    });
     if (!facts) {
       state.initialization = "unavailable";
       return;
@@ -556,6 +564,54 @@ export async function readAuthorizedMemoryForInvocation(params: {
       isInvocationValid: () => revalidateInvocation(params.token, state),
     });
     return Object.freeze({ ...envelope.value, path: params.path });
+  } catch {
+    return MEMORY_INVOCATION_UNAVAILABLE;
+  }
+}
+
+/** Commits one maintenance memory note without exposing a filesystem destination. */
+export async function rememberAuthorizedMemoryForInvocation(params: {
+  token: MemoryInvocationToken;
+  content: string;
+  toolCallId: string;
+}): Promise<
+  Readonly<Pick<MemoryWriteResult, "status" | "committedAt">> | MemoryInvocationUnavailable
+> {
+  const state = readInvocationState(params.token);
+  if (
+    !state ||
+    !revalidateInvocation(params.token, state) ||
+    state.context?.operation !== "append" ||
+    !state.context ||
+    !state.plan ||
+    !state.runtime ||
+    !("writeAuthorized" in state.runtime) ||
+    typeof state.runtime.writeAuthorized !== "function" ||
+    !params.content.trim() ||
+    !params.toolCallId.trim()
+  ) {
+    return MEMORY_INVOCATION_UNAVAILABLE;
+  }
+  const mutationId = hashMemoryRevision("mfm1", {
+    contextFingerprint: state.context.contextFingerprint,
+    planId: state.plan.planId,
+    toolCallId: params.toolCallId,
+    content: params.content,
+  });
+  try {
+    const result = await state.runtime.writeAuthorized({
+      context: state.context,
+      plan: state.plan,
+      mutation: {
+        version: 1,
+        kind: "remember",
+        mutationId,
+        idempotencyKey: mutationId,
+        content: params.content,
+        contentType: "markdown",
+      },
+    });
+    return Object.freeze({ status: result.status, committedAt: result.committedAt });
   } catch {
     return MEMORY_INVOCATION_UNAVAILABLE;
   }
