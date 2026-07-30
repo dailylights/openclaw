@@ -1,6 +1,7 @@
 // Memory Wiki plugin entrypoint registers its OpenClaw integration.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isMemoryInvocationEnforced } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { definePluginEntry, type OpenClawConfig } from "./api.js";
 import { registerWikiCli } from "./src/cli.js";
 import {
@@ -13,6 +14,7 @@ import {
 } from "./src/compiled-cache.js";
 import {
   memoryWikiConfigSchema,
+  isMemoryWikiReadIsolationUnavailable,
   resolveMemoryWikiAgentConfig,
   resolveMemoryWikiConfig,
   resolveMemoryWikiConfiguredAgentIds,
@@ -87,15 +89,22 @@ export default definePluginEntry({
       resolveMemoryWikiAgentConfig({ config, appConfig, agentId });
     const resolveToolContext = (agentId?: string) => {
       const appConfig = getAppConfig();
+      const configuredAgentIds = resolveMemoryWikiConfiguredAgentIds(appConfig);
+      const requestedAgentId = agentId?.trim();
       if (
-        config.vault.scope === "agent" &&
-        !agentId &&
-        resolveMemoryWikiConfiguredAgentIds(appConfig).length > 1
+        isMemoryWikiReadIsolationUnavailable({
+          config,
+          appConfig,
+          ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
+        })
       ) {
-        // Context-free tool discovery cannot safely choose one agent's vault.
         return null;
       }
-      return { appConfig, config: resolveConfig(agentId, appConfig) };
+      const effectiveAgentId = requestedAgentId ?? configuredAgentIds[0];
+      if (!effectiveAgentId) {
+        return null;
+      }
+      return { appConfig, config: resolveConfig(effectiveAgentId, appConfig) };
     };
     configureMemoryWikiSourceSyncStateStore(
       createMemoryWikiSourceSyncStateStore(api.runtime.state.openKeyedStore),
@@ -113,12 +122,16 @@ export default definePluginEntry({
       id: "memory-wiki-compiled-cache-owner-cleanup",
       async start() {
         const appConfig = getAppConfig();
+        const configuredAgentIds = resolveMemoryWikiConfiguredAgentIds(appConfig);
+        const legacyAgentIds = configuredAgentIds.filter(
+          (agentId) => !isMemoryWikiReadIsolationUnavailable({ config, appConfig, agentId }),
+        );
         const activeConfigs =
           config.vault.scope === "global"
-            ? [resolveConfig(undefined, appConfig)]
-            : resolveMemoryWikiConfiguredAgentIds(appConfig).map((agentId) =>
-                resolveConfig(agentId, appConfig),
-              );
+            ? legacyAgentIds.length > 0
+              ? [resolveConfig(legacyAgentIds[0], appConfig)]
+              : []
+            : legacyAgentIds.map((agentId) => resolveConfig(agentId, appConfig));
         // Clear every previously trusted owner before fallible vault reads. A failed
         // lifecycle refresh must leave prompt preparation closed, not stale-but-active.
         deactivateMemoryWikiCompiledCacheOwnersExcept(new Set());
@@ -157,9 +170,45 @@ export default definePluginEntry({
       },
     });
 
-    api.registerMemoryPromptSupplement(createWikiPromptSectionBuilder());
-    api.registerMemoryPromptPreparation(createWikiPromptSectionPreparer({ config, resolveConfig }));
-    api.registerMemoryCorpusSupplement(createWikiCorpusSupplement({ resolveConfig, getAppConfig }));
+    const promptBuilder = createWikiPromptSectionBuilder();
+    api.registerMemoryPromptSupplement((params) =>
+      isMemoryWikiReadIsolationUnavailable({
+        config,
+        appConfig: getAppConfig(),
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+      })
+        ? []
+        : promptBuilder(params),
+    );
+    const promptPreparer = createWikiPromptSectionPreparer({ config, resolveConfig });
+    api.registerMemoryPromptPreparation(async (params) =>
+      isMemoryWikiReadIsolationUnavailable({
+        config,
+        appConfig: getAppConfig(),
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+      })
+        ? []
+        : await promptPreparer(params),
+    );
+    const corpusSupplement = createWikiCorpusSupplement({ resolveConfig, getAppConfig });
+    api.registerMemoryCorpusSupplement({
+      search: async (params) =>
+        isMemoryWikiReadIsolationUnavailable({
+          config,
+          appConfig: getAppConfig(),
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+        })
+          ? []
+          : await corpusSupplement.search(params),
+      get: async (params) =>
+        isMemoryWikiReadIsolationUnavailable({
+          config,
+          appConfig: getAppConfig(),
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+        })
+          ? null
+          : await corpusSupplement.get(params),
+    });
     registerMemoryWikiGatewayMethods({
       api,
       config,
@@ -169,6 +218,9 @@ export default definePluginEntry({
     });
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const resolved = resolveToolContext(ctx.agentId);
         return resolved
           ? createWikiStatusTool(resolved.config, resolved.appConfig, {
@@ -180,6 +232,9 @@ export default definePluginEntry({
     );
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const resolved = resolveToolContext(ctx.agentId);
         return resolved ? createWikiLintTool(resolved.config, resolved.appConfig) : null;
       },
@@ -187,6 +242,9 @@ export default definePluginEntry({
     );
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const resolved = resolveToolContext(ctx.agentId);
         return resolved ? createWikiApplyTool(resolved.config, resolved.appConfig) : null;
       },
@@ -194,6 +252,9 @@ export default definePluginEntry({
     );
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const resolved = resolveToolContext(ctx.agentId);
         if (!resolved) {
           return null;
@@ -209,6 +270,9 @@ export default definePluginEntry({
     );
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const resolved = resolveToolContext(ctx.agentId);
         if (!resolved) {
           return null;

@@ -6,6 +6,7 @@ import type { OpenClawConfig, OpenClawPluginApi } from "../api.js";
 import { applyMemoryWikiMutation, normalizeMemoryWikiMutationInput } from "./apply.js";
 import { compileMemoryWikiVault } from "./compile.js";
 import {
+  isMemoryWikiReadIsolationUnavailable,
   resolveMemoryWikiAgentConfig,
   WIKI_SEARCH_BACKENDS,
   WIKI_SEARCH_CORPORA,
@@ -113,10 +114,10 @@ export function registerMemoryWikiGatewayMethods(params: {
           appConfig,
           ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
         });
-    const agentId =
-      config.agentId ??
-      requestedAgentId ??
-      (appConfig ? resolveDefaultAgentId(appConfig) : undefined);
+    const agentId = config.agentId ?? requestedAgentId ?? resolveDefaultAgentId(appConfig ?? {});
+    if (isMemoryWikiReadIsolationUnavailable({ config, appConfig, agentId })) {
+      throw new Error("memory unavailable");
+    }
     return { agentId, appConfig, config };
   };
 

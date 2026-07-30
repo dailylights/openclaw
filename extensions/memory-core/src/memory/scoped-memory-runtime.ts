@@ -277,8 +277,8 @@ export function createBuiltinScopedMemoryRuntime(
       ...new Set(params.snapshots.map((snapshot) => snapshot.sourcePolicySetId)),
     ]);
     const recordedAt = new Date(params.nowMs).toISOString();
-    const exposedHandles = [
-      ...new Set(params.resourceHandles.map((handle) => handle.handleId)),
+    const exposedResourceRevisions = [
+      ...new Set(params.resourceHandles.map((handle) => handle.resourceRevision)),
     ].toSorted(compareText);
     let allowedAudiences: AudienceRef[] = [];
     let canonicalPlan: AuthorizedMemoryPlan | undefined;
@@ -321,7 +321,7 @@ export function createBuiltinScopedMemoryRuntime(
           run_id: params.context.runId,
           run_exposure_revision: runExposureRevision,
           source_policy_set_id: sourcePolicySetId,
-          exposed_revision_handles_json: JSON.stringify(exposedHandles),
+          exposed_revision_handles_json: JSON.stringify(exposedResourceRevisions),
           recorded_at: params.nowMs,
         }),
       );
@@ -357,7 +357,7 @@ export function createBuiltinScopedMemoryRuntime(
         runId: params.context.runId,
         runExposureRevision,
         sourcePolicySetId,
-        exposedRevisionHandles: Object.freeze(exposedHandles),
+        exposedRevisionHandles: Object.freeze(exposedResourceRevisions),
         recordedAt,
       }),
       egressReceipt: Object.freeze({

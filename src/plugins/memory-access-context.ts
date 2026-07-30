@@ -1,4 +1,4 @@
-import { stableStringify } from "../agents/stable-stringify.js";
+import { stableStringify } from "@openclaw/normalization-core";
 import { sha256Hex } from "../infra/crypto-digest.js";
 import type {
   AudienceRef,
@@ -426,10 +426,14 @@ export function createMemoryAccessContextFactory(
       agentId: facts.agentId,
       sessionKey: facts.sessionKey,
     });
+    const expectedSubject = cloneSubject(facts.subject);
+    const currentSubject = currentIdentity ? cloneSubject(currentIdentity.subject) : undefined;
     if (
       !currentIdentity ||
       currentIdentity.sessionId !== facts.sessionId ||
-      currentIdentity.sessionIdentityRevision !== facts.sessionIdentityRevision
+      currentIdentity.sessionIdentityRevision !== facts.sessionIdentityRevision ||
+      currentIdentity.subjectRevision !== facts.subjectRevision ||
+      stableStringify(currentSubject) !== stableStringify(expectedSubject)
     ) {
       throw new MemoryAccessContextError("session-rebound");
     }
@@ -574,7 +578,10 @@ export function brandAuthorizedMemoryPlan(params: {
   }
   const deliveryAudienceKeys = new Set(context.delivery.audiences.map(audienceKey));
   const allowedEgressAudiences = cloneAudiences(plan.allowedEgressAudiences);
-  if (allowedEgressAudiences.some((audience) => !deliveryAudienceKeys.has(audienceKey(audience)))) {
+  if (
+    allowedEgressAudiences.length !== deliveryAudienceKeys.size ||
+    allowedEgressAudiences.some((audience) => !deliveryAudienceKeys.has(audienceKey(audience)))
+  ) {
     throw new MemoryAccessContextError("outside-view");
   }
   const brandedPlan = {

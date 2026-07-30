@@ -6,6 +6,7 @@ import {
   resolveMemorySearchConfig,
   resolveSessionAgentIds,
   type MemoryCorpusSearchResult,
+  type MemoryInvocationToken,
   type AnyAgentTool,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
@@ -25,6 +26,7 @@ type MemoryToolOptions = {
   oneShotCliRun?: boolean;
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
+  memoryInvocationToken?: MemoryInvocationToken;
 };
 
 export const loadMemoryToolRuntime = createLazyRuntimeModule(() => import("./tools.runtime.js"));
@@ -166,6 +168,7 @@ export async function searchMemoryCorpusSupplements(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
   corpus?: "memory" | "wiki" | "all" | "sessions";
 }): Promise<MemoryCorpusSearchResult[]> {
   if (params.corpus === "memory" || params.corpus === "sessions") {
@@ -197,6 +200,7 @@ export async function getMemoryCorpusSupplementResult(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
   corpus?: "memory" | "wiki" | "all" | "sessions";
 }) {
   if (params.corpus === "memory" || params.corpus === "sessions") {

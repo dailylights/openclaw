@@ -9,6 +9,7 @@ import type {
   MemoryAuthorizationCapabilities,
 } from "../memory-host-sdk/host/authorization.js";
 import type { MemorySearchManager, MemorySearchResult } from "../memory-host-sdk/host/types.js";
+import type { MemoryInvocationToken } from "./memory-invocation-token.js";
 import type {
   EmbeddingProvider,
   EmbeddingProviderAdapter,
@@ -148,6 +149,7 @@ export type MemoryPromptSectionParams = {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
 };
 
 export type MemoryPromptSectionBuilder = (params: MemoryPromptSectionParams) => string[];
@@ -163,6 +165,7 @@ export type PreparedMemoryPromptSection = Readonly<{
     agentId?: string;
     agentSessionKey?: string;
     sandboxed: boolean;
+    memoryInvocationEnforced: boolean;
   }>;
   lines: readonly string[];
 }>;
@@ -207,6 +210,7 @@ export type MemoryCorpusSupplement = {
     agentId?: string;
     agentSessionKey?: string;
     sandboxed?: boolean;
+    memoryInvocationToken?: MemoryInvocationToken;
   }): Promise<MemoryCorpusSearchResult[]>;
   get(params: {
     lookup: string;
@@ -215,6 +219,7 @@ export type MemoryCorpusSupplement = {
     agentId?: string;
     agentSessionKey?: string;
     sandboxed?: boolean;
+    memoryInvocationToken?: MemoryInvocationToken;
   }): Promise<MemoryCorpusGetResult | null>;
 };
 

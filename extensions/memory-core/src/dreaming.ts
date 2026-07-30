@@ -1,7 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 // Memory Core plugin module implements dreaming behavior.
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import { resolveMemoryDreamingPluginConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import {
+  isMemoryIsolationCutoverAgent,
+  resolveDefaultAgentId,
+  resolveMemoryDreamingPluginConfig,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import {
   DEFAULT_MEMORY_DEEP_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS as DEFAULT_MEMORY_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
   DEFAULT_MEMORY_DEEP_DREAMING_RECENCY_HALF_LIFE_DAYS as DEFAULT_MEMORY_DREAMING_RECENCY_HALF_LIFE_DAYS,
@@ -576,7 +580,9 @@ async function runShortTermDreamingPromotionIfTriggered(params: {
   const fallbackWorkspaceDir = normalizeTrimmedString(params.workspaceDir);
   // Narrative subagent sessions live in per-agent SQLite stores, so every swept workspace
   // carries its owning agent. The triggering agent owns whatever the roster cannot attribute.
-  const triggerAgentId = normalizeLowercaseStringOrEmpty(params.agentId);
+  const triggerAgentId = normalizeLowercaseStringOrEmpty(
+    params.agentId ?? (params.cfg ? resolveDefaultAgentId(params.cfg) : undefined),
+  );
   const seenWorkspaces = new Set<string>();
   const workspaces: Array<{ agentId?: string; workspaceDir: string }> = [];
   const addWorkspace = (workspaceDir: string, agentId: string): void => {
@@ -601,10 +607,19 @@ async function runShortTermDreamingPromotionIfTriggered(params: {
       // the host falls back to the roster default agent when the turn has no id.
       ...(triggerAgentId ? { primaryAgentId: triggerAgentId } : {}),
     })) {
-      addWorkspace(entry.workspaceDir, resolveWorkspaceOwnerAgentId(entry.agentIds));
+      // A shared legacy filesystem cannot separate one cutover agent from its
+      // roster peers. Skip the whole workspace until every owner uses scoped storage.
+      if (!entry.agentIds.some(isMemoryIsolationCutoverAgent)) {
+        addWorkspace(entry.workspaceDir, resolveWorkspaceOwnerAgentId(entry.agentIds));
+      }
     }
   }
-  if (workspaces.length === 0 && fallbackWorkspaceDir) {
+  if (
+    workspaces.length === 0 &&
+    fallbackWorkspaceDir &&
+    triggerAgentId.length > 0 &&
+    !isMemoryIsolationCutoverAgent(triggerAgentId)
+  ) {
     addWorkspace(fallbackWorkspaceDir, triggerAgentId);
   }
   if (workspaces.length === 0) {
@@ -900,10 +915,19 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
           resolveMemoryDreamingPluginConfig(api.config) ??
           api.pluginConfig)
         : resolveMemoryDreamingPluginConfig(startupCfg);
-    const config = resolveShortTermPromotionDreamingConfig({
+    const resolvedConfig = resolveShortTermPromotionDreamingConfig({
       pluginConfig,
       cfg: startupCfg,
     });
+    const configuredAgentIds = (startupCfg.agents?.list ?? [])
+      .map((entry) => entry.id?.trim())
+      .filter((agentId): agentId is string => Boolean(agentId));
+    if (configuredAgentIds.length === 0) {
+      configuredAgentIds.push(resolveDefaultAgentId(startupCfg));
+    }
+    const config = configuredAgentIds.every(isMemoryIsolationCutoverAgent)
+      ? { ...resolvedConfig, enabled: false }
+      : resolvedConfig;
     if (params.reason === "startup") {
       resolveStartupCron = params.startupCron ?? null;
     }

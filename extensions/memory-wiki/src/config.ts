@@ -2,6 +2,7 @@
 import os from "node:os";
 import path from "node:path";
 import { mapPluginConfigIssues } from "openclaw/plugin-sdk/extension-shared";
+import { isMemoryIsolationCutoverAgent } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveDefaultAgentId, resolveSessionAgentId } from "openclaw/plugin-sdk/memory-host-core";
 import { buildPluginConfigSchema, z, type OpenClawPluginConfigSchema } from "../api.js";
 import type { OpenClawConfig } from "../api.js";
@@ -307,6 +308,30 @@ export function resolveMemoryWikiConfiguredAgentIds(
     return [resolveSessionAgentId({ config: appConfig, agentId: rawId })];
   });
   return [...new Set(ids.length > 0 ? ids : [resolveDefaultAgentId(appConfig ?? {})])];
+}
+
+/** Global vaults cannot separate a cutover agent from legacy roster members. */
+export function isMemoryWikiReadIsolationUnavailable(params: {
+  config: ResolvedMemoryWikiConfig;
+  appConfig: OpenClawConfig | undefined;
+  agentId?: string;
+}): boolean {
+  const configuredAgentIds = resolveMemoryWikiConfiguredAgentIds(params.appConfig);
+  if (
+    params.config.vault.scope === "global" &&
+    configuredAgentIds.some(isMemoryIsolationCutoverAgent)
+  ) {
+    return true;
+  }
+  const requestedAgentId = params.agentId?.trim();
+  if (!requestedAgentId && params.config.vault.scope === "agent" && configuredAgentIds.length > 1) {
+    return true;
+  }
+  const effectiveAgentId = resolveSessionAgentId({
+    config: params.appConfig,
+    agentId: requestedAgentId ?? resolveDefaultAgentId(params.appConfig ?? {}),
+  });
+  return isMemoryIsolationCutoverAgent(effectiveAgentId);
 }
 
 /** Resolve the exact vault for one trusted runtime agent context. */

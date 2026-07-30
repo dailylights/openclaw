@@ -32,7 +32,7 @@ import type {
   SqliteSessionEntryRemovalPlan,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import { normalizeSqliteNumber } from "./session-accessor.sqlite-normalize.js";
-import { loadSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
+import { loadVisibleSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import { collectSqliteSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
 import { cloneSessionEntry, getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { parseSqliteSessionEntryJson as parseSessionEntryRow } from "./session-accessor.sqlite-status.js";
@@ -377,7 +377,10 @@ export async function projectSqliteSessionEntryLifecycleMutation(
     const resetBoundaryPlan =
       upsert.resetBoundaryReason && expectedEntry?.sessionId
         ? await buildSessionResetBoundaryPlan({
-            events: loadSqliteTranscriptEventsFromDatabase(database, expectedEntry.sessionId),
+            events: loadVisibleSqliteTranscriptEventsFromDatabase(
+              database,
+              expectedEntry.sessionId,
+            ),
             reason: upsert.resetBoundaryReason,
           })
         : undefined;

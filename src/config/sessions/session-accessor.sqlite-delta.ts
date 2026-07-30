@@ -21,8 +21,10 @@ import {
   resolveSqliteSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 
 const RAW_TRANSCRIPT_CURSOR_VERSION = 1;
+const ENFORCED_TRANSCRIPT_CURSOR_VERSION = 2;
 const DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS = 1_000;
 const DEFAULT_RAW_TRANSCRIPT_MAX_BYTES = 1_000_000;
 const MAX_RAW_TRANSCRIPT_EVENTS = 10_000;
@@ -34,6 +36,14 @@ type RawTranscriptCursor = {
   lastSeq: number;
   sessionId: string;
   version: typeof RAW_TRANSCRIPT_CURSOR_VERSION;
+};
+
+type EnforcedTranscriptCursor = {
+  agentId: string;
+  generation: string;
+  lastAuthorizedOrdinal: number;
+  sessionId: string;
+  version: typeof ENFORCED_TRANSCRIPT_CURSOR_VERSION;
 };
 
 type ResolvedTranscriptReadScope = ReturnType<typeof resolveSqliteTranscriptReadScope>;
@@ -74,6 +84,34 @@ function parseRawTranscriptCursor(value: string): RawTranscriptCursor | undefine
       return undefined;
     }
     return parsed as RawTranscriptCursor;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeEnforcedTranscriptCursor(cursor: EnforcedTranscriptCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function parseEnforcedTranscriptCursor(value: string): EnforcedTranscriptCursor | undefined {
+  if (value.length > 4_096) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8"),
+    ) as Partial<EnforcedTranscriptCursor>;
+    if (
+      parsed.version !== ENFORCED_TRANSCRIPT_CURSOR_VERSION ||
+      typeof parsed.agentId !== "string" ||
+      typeof parsed.sessionId !== "string" ||
+      typeof parsed.generation !== "string" ||
+      !Number.isSafeInteger(parsed.lastAuthorizedOrdinal) ||
+      (parsed.lastAuthorizedOrdinal ?? -2) < -1
+    ) {
+      return undefined;
+    }
+    return parsed as EnforcedTranscriptCursor;
   } catch {
     return undefined;
   }
@@ -143,6 +181,7 @@ function readRawDeltaInTransaction(
   beforeEventSeq: number | undefined,
 ): SessionTranscriptRawDeltaResult {
   const db = getSessionKysely(database);
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(database, scope.sessionId);
   const state = executeSqliteQueryTakeFirstSync(
     database,
     db
@@ -152,6 +191,18 @@ function readRawDeltaInTransaction(
   );
   if (!state) {
     return { kind: "missing" };
+  }
+  if (authorizedSeqs) {
+    return readEnforcedRawDeltaInTransaction({
+      database,
+      scope,
+      generation: state.generation,
+      authorizedSeqs,
+      encodedCursor,
+      maxEvents,
+      maxBytes,
+      beforeEventSeq,
+    });
   }
 
   const initialCursor = bootstrapCursor(scope, state.generation);
@@ -249,6 +300,124 @@ function readRawDeltaInTransaction(
     cursor: nextCursor,
     events: rows,
     hasMore: selectedCount < metadata.length,
+    ...(requiredBytes !== undefined ? { requiredBytes } : {}),
+    serializedBytes,
+  };
+}
+
+function readEnforcedRawDeltaInTransaction(params: {
+  database: import("node:sqlite").DatabaseSync;
+  scope: ResolvedTranscriptReadScope;
+  generation: string;
+  authorizedSeqs: ReadonlySet<number>;
+  encodedCursor: string | undefined;
+  maxEvents: number;
+  maxBytes: number;
+  beforeEventSeq: number | undefined;
+}): SessionTranscriptRawDeltaResult {
+  const initialCursor: EnforcedTranscriptCursor = {
+    agentId: params.scope.agentId,
+    generation: params.generation,
+    lastAuthorizedOrdinal: -1,
+    sessionId: params.scope.sessionId,
+    version: ENFORCED_TRANSCRIPT_CURSOR_VERSION,
+  };
+  const reset = (
+    reason: Extract<SessionTranscriptRawDeltaResult, { kind: "reset" }>["reason"],
+  ) => ({
+    kind: "reset" as const,
+    cursor: encodeEnforcedTranscriptCursor(initialCursor),
+    reason,
+  });
+  const cursor =
+    params.encodedCursor === undefined
+      ? initialCursor
+      : parseEnforcedTranscriptCursor(params.encodedCursor);
+  if (!cursor) {
+    return reset("invalid_cursor");
+  }
+  if (cursor.agentId !== params.scope.agentId || cursor.sessionId !== params.scope.sessionId) {
+    return reset("scope_mismatch");
+  }
+  if (cursor.generation !== params.generation) {
+    return reset("generation_mismatch");
+  }
+  const db = getSessionKysely(params.database);
+  const authorizedMetadata = executeSqliteQuerySync(
+    params.database,
+    db
+      .selectFrom("transcript_events")
+      .select([
+        "seq",
+        /* kysely-allow-raw: SQLite byte length avoids parsing excluded JSON. */
+        sql<number>`LENGTH(CAST(event_json AS BLOB)) + 1`.as("serialized_bytes"),
+      ])
+      .where("session_id", "=", params.scope.sessionId)
+      .orderBy("seq", "asc"),
+  )
+    .rows.filter(
+      (row) =>
+        params.authorizedSeqs.has(row.seq) &&
+        (params.beforeEventSeq === undefined || row.seq < params.beforeEventSeq),
+    )
+    .map((row, authorizedOrdinal) => ({
+      authorizedOrdinal,
+      rawSeq: normalizeSqliteNumber(row.seq),
+      serializedBytes: normalizeSqliteNumber(row.serialized_bytes),
+    }));
+  const maxAuthorizedOrdinal = authorizedMetadata.length - 1;
+  if (cursor.lastAuthorizedOrdinal > maxAuthorizedOrdinal) {
+    if (params.beforeEventSeq !== undefined) {
+      throw new SessionTranscriptReadFenceError(
+        "Transcript read cursor has crossed the current-turn admission fence",
+      );
+    }
+    return reset("invalid_cursor");
+  }
+  const remaining = authorizedMetadata.slice(cursor.lastAuthorizedOrdinal + 1);
+  let serializedBytes = 0;
+  let selectedCount = 0;
+  for (const row of remaining) {
+    if (
+      selectedCount >= params.maxEvents ||
+      serializedBytes + row.serializedBytes > params.maxBytes
+    ) {
+      break;
+    }
+    serializedBytes += row.serializedBytes;
+    selectedCount += 1;
+  }
+  const selectedMetadata = remaining.slice(0, selectedCount);
+  const denseSeqByRawSeq = new Map(
+    selectedMetadata.map((row) => [row.rawSeq, row.authorizedOrdinal] as const),
+  );
+  const rows =
+    selectedMetadata.length === 0
+      ? []
+      : executeSqliteQuerySync(
+          params.database,
+          db
+            .selectFrom("transcript_events")
+            .select(["event_json", "seq"])
+            .where("session_id", "=", params.scope.sessionId)
+            .where("seq", ">=", selectedMetadata[0]!.rawSeq)
+            .where("seq", "<=", selectedMetadata.at(-1)!.rawSeq)
+            .orderBy("seq", "asc"),
+        ).rows.flatMap((row) => {
+          const denseSeq = denseSeqByRawSeq.get(row.seq);
+          return denseSeq === undefined
+            ? []
+            : [{ event: JSON.parse(row.event_json) as TranscriptEvent, seq: denseSeq }];
+        });
+  const lastAuthorizedOrdinal =
+    selectedMetadata.at(-1)?.authorizedOrdinal ?? cursor.lastAuthorizedOrdinal;
+  const requiredBytes =
+    selectedCount === 0 && remaining[0] ? remaining[0].serializedBytes : undefined;
+  return {
+    kind: "page",
+    cursor: encodeEnforcedTranscriptCursor({ ...cursor, lastAuthorizedOrdinal }),
+    events: rows,
+    hasMore: selectedCount < remaining.length,
     ...(requiredBytes !== undefined ? { requiredBytes } : {}),
     serializedBytes,
   };

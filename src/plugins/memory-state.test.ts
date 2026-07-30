@@ -1,5 +1,12 @@
 // Covers plugin-backed memory state registration and reset behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("./memory-cutover.js", () => cutoverMocks);
+
 import {
   buildMemoryPromptSection,
   clearMemoryPluginState,
@@ -68,6 +75,8 @@ function registerMemoryState(params: {
 describe("memory plugin state", () => {
   afterEach(() => {
     clearMemoryPluginState();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
   });
 
   it("returns empty defaults when no memory plugin state is registered", () => {
@@ -154,7 +163,7 @@ describe("memory plugin state", () => {
     ]);
   });
 
-  it("normalizes public memory artifacts without agent ids", async () => {
+  it("drops public memory artifacts without an explicit agent roster", async () => {
     const legacyArtifact = {
       kind: "memory-root",
       workspaceDir: "/tmp/workspace",
@@ -171,13 +180,46 @@ describe("memory plugin state", () => {
       },
     });
 
+    await expect(listActiveMemoryPublicArtifacts({ cfg: {} as never })).resolves.toEqual([]);
+  });
+
+  it("drops mixed-roster artifacts and strips undeclared plugin fields", async () => {
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockImplementation(
+      (agentId: string) => agentId === "cutover",
+    );
+    registerMemoryCapability("memory-core", {
+      publicArtifacts: {
+        async listArtifacts() {
+          return [
+            {
+              kind: "mixed",
+              workspaceDir: "/tmp/mixed",
+              relativePath: "MEMORY.md",
+              absolutePath: "/tmp/mixed/MEMORY.md",
+              agentIds: ["legacy", "cutover"],
+              contentType: "markdown" as const,
+            },
+            {
+              kind: "legacy",
+              workspaceDir: "/tmp/legacy",
+              relativePath: "MEMORY.md",
+              absolutePath: "/tmp/legacy/MEMORY.md",
+              agentIds: ["legacy"],
+              contentType: "markdown" as const,
+              privatePayload: "must not escape",
+            } as MemoryPluginPublicArtifact,
+          ];
+        },
+      },
+    });
+
     await expect(listActiveMemoryPublicArtifacts({ cfg: {} as never })).resolves.toEqual([
       {
-        kind: "memory-root",
-        workspaceDir: "/tmp/workspace",
+        kind: "legacy",
+        workspaceDir: "/tmp/legacy",
         relativePath: "MEMORY.md",
-        absolutePath: "/tmp/workspace/MEMORY.md",
-        agentIds: [],
+        absolutePath: "/tmp/legacy/MEMORY.md",
+        agentIds: ["legacy"],
         contentType: "markdown",
       },
     ]);

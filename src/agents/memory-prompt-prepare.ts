@@ -1,4 +1,5 @@
 import type { MemoryCitationsMode } from "../config/types.memory.js";
+import type { MemoryInvocationToken } from "../plugins/memory-invocation.js";
 import {
   prepareMemoryPromptSection,
   type PreparedMemoryPromptSection,
@@ -13,6 +14,7 @@ export async function prepareAgentMemoryPrompt(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
 }): Promise<PreparedMemoryPromptSection | undefined> {
   if (!params.enabled) {
     return undefined;
@@ -28,5 +30,6 @@ export async function prepareAgentMemoryPrompt(params: {
     agentId: params.agentId,
     agentSessionKey: params.agentSessionKey,
     sandboxed: params.sandboxed,
+    memoryInvocationToken: params.memoryInvocationToken,
   });
 }

@@ -4,6 +4,10 @@
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
+  isMemoryInvocationEnforced,
+  isMemoryIsolationCutoverAgent,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import {
   normalizePluginsConfig,
   resolveLivePluginConfigObject,
 } from "openclaw/plugin-sdk/plugin-config-runtime";
@@ -202,6 +206,9 @@ export default definePluginEntry({
           };
         }
         const commandAgentId = resolveStatusUpdateAgentId({ sessionKey });
+        if (commandAgentId && isMemoryIsolationCutoverAgent(commandAgentId)) {
+          return { text: "Active Memory: unavailable for this agent." };
+        }
         const liveConfig = readCurrentConfig() ?? api.config;
         const commandRecallEnabled =
           isEnabledForAgent(config, commandAgentId) ||
@@ -241,6 +248,9 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
+        if (isMemoryInvocationEnforced()) {
+          return undefined;
+        }
         refreshLiveConfigFromRuntime();
         const liveConfig = readCurrentConfig() ?? api.config;
         // The hook deadline, watchdog, and embedded-run budget all flow from
@@ -249,6 +259,9 @@ export default definePluginEntry({
         // eligibility so API-key/missing-backend passthrough runs keep the
         // plain default.
         const timeoutAgentId = resolveStatusUpdateAgentId(ctx);
+        if (timeoutAgentId && isMemoryIsolationCutoverAgent(timeoutAgentId)) {
+          return undefined;
+        }
         // getModelRef returns undefined when no recall model resolves; the
         // eligibility check treats a missing provider as ineligible.
         const timeoutModelRef =
@@ -305,6 +318,9 @@ export default definePluginEntry({
                 : undefined);
             const effectiveAgentId =
               resolvedAgentId || resolveStatusUpdateAgentId({ sessionKey: resolvedSessionKey });
+            if (effectiveAgentId && isMemoryIsolationCutoverAgent(effectiveAgentId)) {
+              return undefined;
+            }
             if (
               shouldSkipActiveMemoryForHarnessSession({
                 api,
@@ -502,9 +518,15 @@ export default definePluginEntry({
       { timeoutMs: beforePromptBuildTimeoutMs },
     );
     api.on("before_model_resolve", async (event, ctx) => {
+      if (isMemoryInvocationEnforced()) {
+        return;
+      }
       refreshLiveConfigFromRuntime();
       const liveConfig = readCurrentConfig() ?? (api.config as OpenClawConfig);
       const effectiveAgentId = resolveStatusUpdateAgentId(ctx);
+      if (effectiveAgentId && isMemoryIsolationCutoverAgent(effectiveAgentId)) {
+        return;
+      }
       const sessionContext = {
         ...ctx,
         sessionKey:

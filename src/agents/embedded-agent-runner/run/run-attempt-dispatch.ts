@@ -203,6 +203,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
   const attemptParams: EmbeddedRunAttemptParams = {
     operation: "attempt",
     sessionId: runtime.sessionId,
+    memoryInvocationToken: params.memoryInvocationToken,
     sessionKey: runtime.sessionKey,
     conversationRecall: params.conversationRecall,
     promptCacheKey: params.promptCacheKey,

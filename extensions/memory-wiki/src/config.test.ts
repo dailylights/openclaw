@@ -5,13 +5,23 @@ import {
   validateJsonSchemaValue,
   type JsonSchemaObject,
 } from "openclaw/plugin-sdk/json-schema-runtime";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../api.js";
 import {
+  isMemoryWikiReadIsolationUnavailable,
   memoryWikiConfigSchema,
   resolveMemoryWikiAgentConfig,
   resolveMemoryWikiConfig,
 } from "./config.js";
+
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
+}));
 
 function compileManifestConfigSchema() {
   const manifest = JSON.parse(
@@ -27,6 +37,11 @@ function compileManifestConfigSchema() {
 }
 
 describe("resolveMemoryWikiConfig", () => {
+  beforeEach(() => {
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
+  });
+
   it("returns isolated defaults", () => {
     const config = resolveMemoryWikiConfig(undefined, { homedir: "/Users/tester" });
 
@@ -141,6 +156,29 @@ describe("resolveMemoryWikiConfig", () => {
     expect(() => resolveMemoryWikiAgentConfig({ config, appConfig, agentId: "finance" })).toThrow(
       "Unknown memory-wiki agentId: finance",
     );
+  });
+
+  it("blocks global mixed rosters and only the cutover agent's scoped vault", () => {
+    const appConfig = {
+      agents: { list: [{ id: "legacy", default: true }, { id: "cutover" }] },
+    } as OpenClawConfig;
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockImplementation(
+      (agentId: string) => agentId === "cutover",
+    );
+
+    const global = resolveMemoryWikiConfig({ vault: { scope: "global" } });
+    expect(
+      isMemoryWikiReadIsolationUnavailable({ config: global, appConfig, agentId: "legacy" }),
+    ).toBe(true);
+
+    const scoped = resolveMemoryWikiConfig({ vault: { scope: "agent" } });
+    expect(
+      isMemoryWikiReadIsolationUnavailable({ config: scoped, appConfig, agentId: "legacy" }),
+    ).toBe(false);
+    expect(
+      isMemoryWikiReadIsolationUnavailable({ config: scoped, appConfig, agentId: "cutover" }),
+    ).toBe(true);
+    expect(isMemoryWikiReadIsolationUnavailable({ config: scoped, appConfig })).toBe(true);
   });
 
   it("rejects unsafe-local access for agent-scoped vaults", () => {

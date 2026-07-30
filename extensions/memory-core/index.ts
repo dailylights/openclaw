@@ -2,9 +2,12 @@ import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 // Memory Core plugin entrypoint registers its OpenClaw integration.
 import {
   jsonResult,
+  isMemoryInvocationEnforced,
+  isMemoryIsolationCutoverAgent,
   resolveMemorySearchConfig,
   resolveSessionAgentIds,
   type MemoryPluginRuntime,
+  type MemoryInvocationToken,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryBackendConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
@@ -42,6 +45,7 @@ type MemoryToolOptions = {
   oneShotCliRun?: boolean;
   conversationRecall?: OpenClawPluginToolContext["conversationRecall"];
   activeProjectKeys?: readonly string[];
+  memoryInvocationToken?: MemoryInvocationToken;
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
 };
@@ -161,6 +165,9 @@ function createLazyMemoryGetTool(options: MemoryToolOptions): AnyAgentTool | nul
 }
 
 function createLazyStandingIntentTool(ctx: OpenClawPluginToolContext): AnyAgentTool | null {
+  if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+    return null;
+  }
   if (ctx.senderIsOwner !== true) {
     return null;
   }
@@ -175,6 +182,9 @@ function createLazyStandingIntentTool(ctx: OpenClawPluginToolContext): AnyAgentT
     config: cfg,
     agentId: ctx.agentId,
   });
+  if (isMemoryIsolationCutoverAgent(agentId)) {
+    return null;
+  }
   let toolPromise: Promise<AnyAgentTool> | undefined;
   const loadTool = async (): Promise<AnyAgentTool> => {
     toolPromise ??= loadStandingIntentToolModule().then((module: StandingIntentToolModule) =>
@@ -243,6 +253,7 @@ function resolveMemoryToolOptions(
     oneShotCliRun: ctx.oneShotCliRun,
     conversationRecall: ctx.conversationRecall,
     activeProjectKeys: ctx.activeProjectKeys,
+    memoryInvocationToken: ctx.memoryInvocationToken,
     ...(host.acquireLocalService ? { acquireLocalService: host.acquireLocalService } : {}),
     ...(host.withLease ? { withLease: host.withLease } : {}),
   };
@@ -272,6 +283,9 @@ function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRunti
       return await runtime.readAuthorized!(params);
     },
     async getMemorySearchManager(params) {
+      if (isMemoryIsolationCutoverAgent(params.agentId)) {
+        return { manager: null, error: "memory unavailable" };
+      }
       return await (await loadRuntime()).getMemorySearchManager(params);
     },
     async authorizeSearchHits(params) {
@@ -337,7 +351,7 @@ export default definePluginEntry({
     });
 
     api.on("before_prompt_build", async (event, ctx) => {
-      if (ctx.trigger !== "user") {
+      if (ctx.trigger !== "user" || isMemoryInvocationEnforced()) {
         return undefined;
       }
       try {
@@ -351,6 +365,9 @@ export default definePluginEntry({
           config,
           agentId: ctx.agentId,
         });
+        if (isMemoryIsolationCutoverAgent(agentId)) {
+          return undefined;
+        }
         const intents = module.matchStandingIntents({
           agentId,
           prompt: event.prompt,
@@ -376,7 +393,10 @@ export default definePluginEntry({
     api.on(
       "before_agent_reply",
       async (_event, ctx) => {
-        if (ctx.trigger !== "heartbeat" && ctx.trigger !== "cron") {
+        if (
+          (ctx.trigger !== "heartbeat" && ctx.trigger !== "cron") ||
+          isMemoryInvocationEnforced()
+        ) {
           return undefined;
         }
         try {
@@ -387,6 +407,9 @@ export default definePluginEntry({
             config,
             agentId: ctx.agentId,
           });
+          if (isMemoryIsolationCutoverAgent(agentId)) {
+            return undefined;
+          }
           module.sweepStandingIntents({ agentId });
         } catch (error) {
           api.logger.warn?.(

@@ -7,6 +7,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 import {
   isCanonicalSessionTranscriptEntry,
   parseSessionTranscriptTreeEntry,
@@ -163,6 +164,7 @@ export function buildSessionTranscriptProjection(params: {
   rows: readonly SessionTranscriptProjectionSourceRow[];
   sessionId: string;
   sourceTranscriptUpdatedAt: number | null;
+  sourceIndexedSeq?: number;
 }): PreparedSessionTranscriptProjection {
   const now = Date.now();
   const events = params.rows.map((row) => row.event);
@@ -199,7 +201,7 @@ export function buildSessionTranscriptProjection(params: {
     ftsRows,
     leafEventId: resolveVisibleTranscriptAppendParentId(events),
     sessionId: params.sessionId,
-    sourceIndexedSeq: params.rows.at(-1)?.seq ?? -1,
+    sourceIndexedSeq: params.sourceIndexedSeq ?? params.rows.at(-1)?.seq ?? -1,
     sourceTranscriptUpdatedAt: params.sourceTranscriptUpdatedAt,
   };
 }
@@ -231,14 +233,20 @@ export function prepareSessionTranscriptProjection(
       if (!session || rows.length === 0) {
         return undefined;
       }
-
+      const authorizedSeqs = readAuthorizedTranscriptEventSeqs(db, sessionId);
+      const projectedRows = authorizedSeqs
+        ? rows.filter((row) => authorizedSeqs.has(row.seq))
+        : rows;
       return buildSessionTranscriptProjection({
-        rows: rows.map((row) => ({
+        rows: projectedRows.map((row) => ({
           createdAt: row.created_at,
           event: JSON.parse(row.event_json) as unknown,
           seq: row.seq,
         })),
         sessionId,
+        // Pending rows remain durable raw history, so the projection watermark
+        // advances past them without materializing their content.
+        sourceIndexedSeq: rows.at(-1)?.seq ?? -1,
         sourceTranscriptUpdatedAt: session.transcript_updated_at,
       });
     },

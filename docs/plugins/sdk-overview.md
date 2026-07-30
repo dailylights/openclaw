@@ -309,9 +309,12 @@ Contract notes:
   scoped tools; calling one returns a clean not-connected tool error for that
   requester. OpenClaw never falls back to another requester's credentials.
 
-Memory prompt supplement builders receive optional `agentId`,
-`agentSessionKey`, and `sandboxed` context. Memory corpus supplement `search`
-and `get` calls receive optional `agentId` and `sandboxed` context. Plugins with
+Memory prompt supplement builders and corpus supplement `search` and `get`
+calls receive optional `agentId`, `agentSessionKey`, `sandboxed`, and
+`memoryInvocationToken` context. The token is an opaque, run-bound host
+capability: never inspect, persist, or construct it. When supplied, a
+supplement must route content through the selected authorized memory capability
+or return no content; it must not read legacy memory storage. Plugins with
 agent-owned storage should resolve that storage for each call instead of
 capturing one global path during registration. If an agent id is required but
 missing in a multi-agent operation, fail closed rather than choosing an

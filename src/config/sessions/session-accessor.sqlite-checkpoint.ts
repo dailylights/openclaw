@@ -30,6 +30,7 @@ import {
   prepareCurrentSessionMemorySubjectLineageSeedInTransaction,
   type TrustedSessionMemorySubjectSeed,
 } from "./session-memory-subject.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
   SESSION_TOTAL_TOKENS_VERSION,
@@ -419,13 +420,15 @@ function readSqliteTranscriptRowsForFork(
     database.db,
     boundarySeq === undefined ? query : query.where("seq", "<=", boundarySeq),
   ).rows;
-  if (rows.length === 0) {
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(database.db, source.sessionId);
+  const readableRows = authorizedSeqs ? rows.filter((row) => authorizedSeqs.has(row.seq)) : rows;
+  if (readableRows.length === 0) {
     return { status: "failed" };
   }
   try {
     return {
       status: "created",
-      events: rows.map((row) => JSON.parse(row.event_json) as TranscriptEvent),
+      events: readableRows.map((row) => JSON.parse(row.event_json) as TranscriptEvent),
     };
   } catch {
     return { status: "failed" };

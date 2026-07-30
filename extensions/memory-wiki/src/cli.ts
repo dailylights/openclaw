@@ -20,6 +20,7 @@ import {
 } from "./chatgpt-import.js";
 import { compileMemoryWikiVault } from "./compile.js";
 import {
+  isMemoryWikiReadIsolationUnavailable,
   resolveMemoryWikiAgentConfig,
   WIKI_SEARCH_BACKENDS,
   WIKI_SEARCH_CORPORA,
@@ -1009,6 +1010,15 @@ export function registerWikiCli(program: Command, registration: MemoryWikiCliReg
     }
     const config = needsAgent ? resolveConfig(agentId, currentAppConfig) : registration.config;
     agentId = config.agentId ?? agentId;
+    if (
+      isMemoryWikiReadIsolationUnavailable({
+        config,
+        appConfig: currentAppConfig,
+        agentId,
+      })
+    ) {
+      throw new Error("memory unavailable");
+    }
     commandContext = {
       config,
       ...(currentAppConfig ? { appConfig: currentAppConfig } : {}),

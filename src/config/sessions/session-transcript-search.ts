@@ -6,6 +6,7 @@ import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { listSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
+import { isTranscriptMemoryPolicyEnforcedInDatabase } from "./session-transcript-memory-policy.js";
 import {
   isSessionTranscriptIndexReconcileRunning,
   startSessionTranscriptIndexReconcile,
@@ -72,6 +73,11 @@ export function searchSessionTranscripts(params: {
   }
   const indexing =
     dirtySessions.length > 0 || isSessionTranscriptIndexReconcileRunning(databaseOptions);
+  if (dirtySessions.length > 0 && isTranscriptMemoryPolicyEnforcedInDatabase(database.db)) {
+    // A stale pre-cutover FTS row can contain denied snippets. Return no
+    // result/count/cursor signal until the policy-filtered rebuild publishes.
+    return { hits: [], indexing: true, truncated: false };
+  }
   const limit = Math.min(Math.max(1, params.limit ?? 10), SEARCH_LIMIT_MAX);
   const sessionKeys = params.sessionKeys ?? [];
   const whereSession =

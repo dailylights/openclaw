@@ -1,5 +1,8 @@
 // Memory Core provider module implements model/runtime integration.
-import type { MemoryPluginRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import {
+  isMemoryIsolationCutoverAgent,
+  type MemoryPluginRuntime,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryBackendConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import { configureMemoryCoreDreamingState } from "./dreaming-state.js";
 import {
@@ -27,6 +30,9 @@ export function createMemoryRuntime(host: MemoryCoreRuntimeHost = {}): MemoryPlu
     searchAuthorized: authorizedRuntime.searchAuthorized,
     readAuthorized: authorizedRuntime.readAuthorized,
     async getMemorySearchManager(params) {
+      if (isMemoryIsolationCutoverAgent(params.agentId)) {
+        return { manager: null, error: "memory unavailable" };
+      }
       const { manager, debug, error } = await getMemorySearchManager({
         ...params,
         ...(host.acquireLocalService ? { acquireLocalService: host.acquireLocalService } : {}),

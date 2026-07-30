@@ -1,4 +1,5 @@
 import { isEmbeddedMode } from "../../../infra/embedded-mode.js";
+import { isMemoryInvocationEnforced } from "../../../plugins/memory-invocation.js";
 import { buildBootstrapBudgetState } from "../../bootstrap-budget.js";
 import {
   buildBootstrapContextForFiles,
@@ -33,6 +34,11 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
   sessionLabel: string;
 }) {
   const { attempt } = params;
+  const memoryIsolated = isMemoryInvocationEnforced(attempt.memoryInvocationToken);
+  const filterMemoryBootstrapFiles = (files: readonly WorkspaceBootstrapFile[]) =>
+    memoryIsolated
+      ? files.filter((file) => !/^(?:MEMORY|USER)\.md$/iu.test(file.name.trim()))
+      : [...files];
   const suppressAmbientContext =
     params.isRawModelRun || attempt.operation === "settled-tool-finalization";
   const contextInjectionMode = resolveContextInjectionMode(attempt.config, params.sessionAgentId);
@@ -74,24 +80,26 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
     contextInjectionMode !== "never" &&
     (bootstrapRouting === undefined || bootstrapRouting.bootstrapMode === "full")
   ) {
-    preloadedBootstrapFiles = await resolveBootstrapFilesForRun({
-      workspaceDir: params.resolvedWorkspace,
-      config: attempt.config,
-      sessionKey: attempt.sessionKey,
-      sessionId: attempt.sessionId,
-      chatType: attempt.chatType,
-      agentId: params.sessionAgentId,
-      warn: bootstrapWarn,
-      contextMode: attempt.bootstrapContextMode,
-      runKind: attempt.bootstrapContextRunKind,
-    });
+    preloadedBootstrapFiles = filterMemoryBootstrapFiles(
+      await resolveBootstrapFilesForRun({
+        workspaceDir: params.resolvedWorkspace,
+        config: attempt.config,
+        sessionKey: attempt.sessionKey,
+        sessionId: attempt.sessionId,
+        chatType: attempt.chatType,
+        agentId: params.sessionAgentId,
+        warn: bootstrapWarn,
+        contextMode: attempt.bootstrapContextMode,
+        runKind: attempt.bootstrapContextRunKind,
+      }),
+    );
     bootstrapRouting = await resolveBootstrapRouting(preloadedBootstrapFiles);
   }
   bootstrapRouting ??= await resolveBootstrapRouting(preloadedBootstrapFiles);
   const bootstrapMode = bootstrapRouting.bootstrapMode;
   const {
-    bootstrapFiles: hookAdjustedBootstrapFiles,
-    contextFiles: resolvedContextFiles,
+    bootstrapFiles: rawHookAdjustedBootstrapFiles,
+    contextFiles: rawResolvedContextFiles,
     shouldRecordCompletedBootstrapTurn,
   } = await resolveAttemptBootstrapContext({
     // Raw probes and isolated finalization must not load AGENTS/BOOTSTRAP
@@ -102,19 +110,20 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
     bootstrapMode,
     hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
     resolveBootstrapContextForRun: async () => {
-      const bootstrapFiles =
+      const bootstrapFiles = filterMemoryBootstrapFiles(
         preloadedBootstrapFiles ??
-        (await resolveBootstrapFilesForRun({
-          workspaceDir: params.resolvedWorkspace,
-          config: attempt.config,
-          sessionKey: attempt.sessionKey,
-          sessionId: attempt.sessionId,
-          chatType: attempt.chatType,
-          agentId: params.sessionAgentId,
-          warn: bootstrapWarn,
-          contextMode: attempt.bootstrapContextMode,
-          runKind: attempt.bootstrapContextRunKind,
-        }));
+          (await resolveBootstrapFilesForRun({
+            workspaceDir: params.resolvedWorkspace,
+            config: attempt.config,
+            sessionKey: attempt.sessionKey,
+            sessionId: attempt.sessionId,
+            chatType: attempt.chatType,
+            agentId: params.sessionAgentId,
+            warn: bootstrapWarn,
+            contextMode: attempt.bootstrapContextMode,
+            runKind: attempt.bootstrapContextRunKind,
+          })),
+      );
       return {
         bootstrapFiles,
         contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
@@ -125,6 +134,12 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
       };
     },
   });
+  const hookAdjustedBootstrapFiles = filterMemoryBootstrapFiles(rawHookAdjustedBootstrapFiles);
+  const resolvedContextFiles = memoryIsolated
+    ? rawResolvedContextFiles.filter(
+        (file) => !/(^|[\\/])(?:MEMORY|USER)\.md$/iu.test(file.path.trim()),
+      )
+    : rawResolvedContextFiles;
   params.markStage("bootstrap-context");
   const remappedContextFiles = remapInjectedContextFilesToWorkspace({
     files: resolvedContextFiles,

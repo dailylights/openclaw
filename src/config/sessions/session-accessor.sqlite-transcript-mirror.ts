@@ -7,12 +7,14 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
   loadSqliteTranscriptEventsFromDatabase,
+  loadVisibleSqliteTranscriptEventsFromDatabase,
   readTranscriptEventMessage,
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
 import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+import { isTranscriptMemoryPolicyEnforcedInDatabase } from "./session-transcript-memory-policy.js";
 
 // Keep supplied-key probes below SQLite's conservative variable ceiling.
 const TRANSCRIPT_MIRROR_KEY_QUERY_BATCH_SIZE = 900;
@@ -81,6 +83,12 @@ function readTranscriptMirrorFactsInSnapshot(
     idempotencyKeys: readonly string[];
   },
 ): TranscriptMirrorFacts {
+  if (isTranscriptMemoryPolicyEnforcedInDatabase(database.db)) {
+    return readMirrorFactsFromEvents(
+      loadVisibleSqliteTranscriptEventsFromDatabase(database, resolved.sessionId),
+      new Set(params.idempotencyKeys),
+    );
+  }
   const idempotencyKeys = [...new Set(params.idempotencyKeys)];
   const fallbackEvents = loadTranscriptEventsForMirrorFallback(database, resolved.sessionId);
   if (fallbackEvents !== undefined) {

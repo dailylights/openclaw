@@ -22,6 +22,9 @@ const afterCompileHook = vi.hoisted(
       run: (() => Promise<void>) | undefined;
     },
 );
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
 
 vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
   callGatewayFromCli: callGatewayFromCliMock,
@@ -40,6 +43,11 @@ vi.mock("./compile.js", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
+}));
 
 const { createVault } = createMemoryWikiTestHarness();
 let suiteRoot = "";
@@ -63,6 +71,8 @@ describe("memory-wiki cli", () => {
 
   beforeEach(() => {
     callGatewayFromCliMock.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
     stdoutWriteMock = vi.fn(() => true);
     vi.spyOn(process.stdout, "write").mockImplementation(
       stdoutWriteMock as unknown as typeof process.stdout.write,
@@ -560,14 +570,14 @@ cli note
       1,
       "wiki.status",
       { timeout: "30000" },
-      undefined,
+      { agentId: "main" },
       { progress: false },
     );
     expect(callGatewayFromCliMock).toHaveBeenNthCalledWith(
       2,
       "wiki.doctor",
       { timeout: "30000" },
-      undefined,
+      { agentId: "main" },
       { progress: false },
     );
   });
@@ -713,7 +723,7 @@ cli note
     expect(callGatewayFromCliMock).toHaveBeenCalledWith(
       "wiki.bridge.import",
       { timeout: "30000" },
-      undefined,
+      { agentId: "main" },
       { progress: false },
     );
 

@@ -14,6 +14,15 @@ import { listMemoryWikiOverview } from "./wiki-overview.js";
 
 type ApplyMemoryWikiMutation = ReturnType<typeof normalizeMemoryWikiMutationInput>;
 
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
+}));
+
 vi.mock("./apply.js", () => ({
   applyMemoryWikiMutation: vi.fn(),
   normalizeMemoryWikiMutationInput: vi.fn(),
@@ -128,6 +137,8 @@ const VAULT_BACKED_GATEWAY_CASES = [
 describe("memory-wiki gateway methods", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
     vi.mocked(syncMemoryWikiImportedSources).mockResolvedValue({
       importedCount: 0,
       updatedCount: 0,
@@ -713,6 +724,7 @@ describe("memory-wiki gateway methods", () => {
     expect(searchMemoryWiki).toHaveBeenCalledWith({
       config,
       appConfig: undefined,
+      agentId: "main",
       query: "Teams Azure",
       maxResults: 3,
       searchBackend: "local",

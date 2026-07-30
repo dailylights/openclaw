@@ -9,6 +9,10 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import {
+  isMemoryInvocationEnforced,
+  isMemoryIsolationCutoverAgent,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { isIncognitoSessionKey, normalizeAgentId } from "openclaw/plugin-sdk/routing";
@@ -196,11 +200,14 @@ export default definePluginEntry({
 
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const agentId = resolveEnabledAgentId(
           ctx.agentId,
           ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? resolveRuntimeConfig(),
         );
-        if (!agentId) {
+        if (!agentId || isMemoryIsolationCutoverAgent(agentId)) {
           return null;
         }
         return {
@@ -312,11 +319,14 @@ export default definePluginEntry({
 
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const agentId = resolveEnabledAgentId(
           ctx.agentId,
           ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? resolveRuntimeConfig(),
         );
-        if (!agentId) {
+        if (!agentId || isMemoryIsolationCutoverAgent(agentId)) {
           return null;
         }
         return {
@@ -408,11 +418,14 @@ export default definePluginEntry({
 
     api.registerTool(
       (ctx) => {
+        if (isMemoryInvocationEnforced(ctx.memoryInvocationToken)) {
+          return null;
+        }
         const agentId = resolveEnabledAgentId(
           ctx.agentId,
           ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? resolveRuntimeConfig(),
         );
-        if (!agentId) {
+        if (!agentId || isMemoryIsolationCutoverAgent(agentId)) {
           return null;
         }
         return {
@@ -497,15 +510,30 @@ export default definePluginEntry({
       { name: "memory_forget" },
     );
 
-    registerMemoryCli(api, db, embeddings, resolveCliAgentId, cfg.recallMaxChars);
+    registerMemoryCli(
+      api,
+      db,
+      embeddings,
+      (rawAgentId) => {
+        const agentId = resolveCliAgentId(rawAgentId);
+        if (isMemoryIsolationCutoverAgent(agentId)) {
+          throw new Error("memory unavailable");
+        }
+        return agentId;
+      },
+      cfg.recallMaxChars,
+    );
 
     api.on("before_prompt_build", async (event, ctx) => {
+      if (isMemoryInvocationEnforced()) {
+        return undefined;
+      }
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoRecall) {
         return undefined;
       }
       const agentId = resolveEnabledAgentId(ctx.agentId);
-      if (!agentId) {
+      if (!agentId || isMemoryIsolationCutoverAgent(agentId)) {
         return undefined;
       }
       if (!event.prompt || event.prompt.length < 5) {
@@ -597,12 +625,15 @@ export default definePluginEntry({
     });
 
     api.on("agent_end", async (event, ctx) => {
+      if (isMemoryInvocationEnforced()) {
+        return;
+      }
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoCapture || isIncognitoSessionKey(ctx.sessionKey)) {
         return;
       }
       const agentId = resolveEnabledAgentId(ctx.agentId);
-      if (!agentId) {
+      if (!agentId || isMemoryIsolationCutoverAgent(agentId)) {
         return;
       }
       if (!event.success || !event.messages || event.messages.length === 0) {

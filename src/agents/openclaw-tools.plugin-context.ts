@@ -8,6 +8,8 @@ import {
  * Normalizes workspace, delivery, browser, sandbox, and active-model inputs before plugin tool invocation.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { MemoryInvocationToken } from "../plugins/memory-invocation.js";
+import type { OpenClawPluginToolContext } from "../plugins/tool-types.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "./agent-scope.js";
@@ -39,6 +41,7 @@ export type OpenClawPluginToolOptions = {
   conversationReadOrigin?: ConversationReadInvocationOrigin;
   requesterAgentIdOverride?: string;
   sessionId?: string;
+  memoryInvocationToken?: MemoryInvocationToken;
   conversationRecall?: ConversationRecallContext;
   /**
    * Explicit one-shot local CLI runs should not keep plugin-owned process
@@ -59,7 +62,10 @@ export function resolveOpenClawPluginToolInputs(params: {
   resolvedConfig?: OpenClawConfig;
   runtimeConfig?: OpenClawConfig;
   getRuntimeConfig?: () => OpenClawConfig | undefined;
-}) {
+}): {
+  context: OpenClawPluginToolContext;
+  allowGatewaySubagentBinding: boolean | undefined;
+} {
   const { options, resolvedConfig, runtimeConfig, getRuntimeConfig } = params;
   const { sessionAgentId } = resolveSessionAgentIds({
     sessionKey: options?.agentSessionKey,
@@ -101,6 +107,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentId: sessionAgentId,
       sessionKey: options?.agentSessionKey,
       sessionId: options?.sessionId,
+      memoryInvocationToken: options?.memoryInvocationToken,
       toolBindings: options?.toolBindings,
       activeProjectKeys: options?.activeProjectKeys,
       conversationRecall: options?.conversationRecall,

@@ -7,6 +7,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatDateStamp, resolveUserTimezone } from "../../agents/date-time.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { openRootFile } from "../../infra/boundary-file-read.js";
+import { isMemoryIsolationCutoverAgent } from "../../plugins/memory-cutover.js";
 
 const STARTUP_MEMORY_FILE_MAX_BYTES = 16_384;
 const STARTUP_MEMORY_FILE_MAX_CHARS = 1_200;
@@ -287,7 +288,11 @@ export async function buildSessionStartupContextPrelude(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
   nowMs?: number;
+  agentId?: string;
 }): Promise<string | null> {
+  if (params.agentId && isMemoryIsolationCutoverAgent(params.agentId)) {
+    return null;
+  }
   const nowMs = params.nowMs ?? Date.now();
   const timezone = resolveUserTimezone(params.cfg?.agents?.defaults?.userTimezone);
   const limits = resolveStartupContextLimits(params.cfg);

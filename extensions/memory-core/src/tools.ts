@@ -9,11 +9,15 @@ import {
 import {
   asToolParamsRecord,
   jsonResult,
+  isMemoryInvocationEnforced,
+  readAuthorizedMemoryForInvocation,
   readFiniteNumberParam,
   readPositiveIntegerParam,
   readStringParam,
   resolveMemoryDreamingPluginConfig,
   resolveMemorySearchConfig,
+  searchAuthorizedMemoryForInvocation,
+  type MemoryInvocationToken,
   type MemoryCorpusSearchResult,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
@@ -364,6 +368,7 @@ async function getSupplementMemoryReadResult(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
   corpus?: "memory" | "wiki" | "all";
 }) {
   const supplement = await getMemoryCorpusSupplementResult({
@@ -373,6 +378,7 @@ async function getSupplementMemoryReadResult(params: {
     agentId: params.agentId,
     agentSessionKey: params.agentSessionKey,
     sandboxed: params.sandboxed,
+    memoryInvocationToken: params.memoryInvocationToken,
     corpus: params.corpus,
   });
   if (!supplement) {
@@ -394,6 +400,7 @@ async function resolveMemoryReadFailureResult(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
 }) {
   if (params.requestedCorpus === "all") {
     try {
@@ -404,6 +411,7 @@ async function resolveMemoryReadFailureResult(params: {
         agentId: params.agentId,
         agentSessionKey: params.agentSessionKey,
         sandboxed: params.sandboxed,
+        memoryInvocationToken: params.memoryInvocationToken,
         corpus: params.requestedCorpus,
       });
       if (supplement) {
@@ -431,6 +439,7 @@ async function executeMemoryReadResult(params: {
   agentId?: string;
   agentSessionKey?: string;
   sandboxed?: boolean;
+  memoryInvocationToken?: MemoryInvocationToken;
 }) {
   try {
     const result = await params.read();
@@ -442,6 +451,7 @@ async function executeMemoryReadResult(params: {
         agentId: params.agentId,
         agentSessionKey: params.agentSessionKey,
         sandboxed: params.sandboxed,
+        memoryInvocationToken: params.memoryInvocationToken,
         corpus: params.requestedCorpus,
       });
       if (supplement) {
@@ -459,6 +469,7 @@ async function executeMemoryReadResult(params: {
       agentId: params.agentId,
       agentSessionKey: params.agentSessionKey,
       sandboxed: params.sandboxed,
+      memoryInvocationToken: params.memoryInvocationToken,
     });
   }
 }
@@ -474,6 +485,7 @@ export function createMemorySearchTool(options: {
   activeProjectKeys?: readonly string[];
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
+  memoryInvocationToken?: MemoryInvocationToken;
 }) {
   return createMemoryTool({
     options,
@@ -501,6 +513,45 @@ export function createMemorySearchTool(options: {
         // The trusted runtime chooses the recall corpus; model-authored arguments cannot broaden it.
         const requestedCorpus =
           options.conversationRecall?.corpus === "sessions" ? "sessions" : modelRequestedCorpus;
+        if (isMemoryInvocationEnforced(options.memoryInvocationToken)) {
+          if (requestedCorpus === "wiki") {
+            return jsonResult({ disabled: true, unavailable: true, error: "memory unavailable" });
+          }
+          const authorized = await searchAuthorizedMemoryForInvocation({
+            token: options.memoryInvocationToken!,
+            query,
+            sources:
+              requestedCorpus === "sessions"
+                ? ["sessions"]
+                : requestedCorpus === "memory"
+                  ? ["memory"]
+                  : undefined,
+            limit: maxResults,
+            signal: callerSignal,
+          });
+          if ("unavailable" in authorized) {
+            return jsonResult(authorized);
+          }
+          const citationsMode = resolveMemoryCitationsMode(cfg);
+          const includeCitations = shouldIncludeCitations({
+            mode: citationsMode,
+            sessionKey: options.agentSessionKey,
+          });
+          const results: Array<MemorySearchResult & { corpus: MemorySource }> = [];
+          for (const result of authorized.results) {
+            if (minScore !== undefined && result.score < minScore) {
+              continue;
+            }
+            const snippet = stripMemoryAnnotationCarriers(result.snippet);
+            if (includeCitations) {
+              results.push(Object.assign({}, result, { snippet, corpus: result.source }));
+              continue;
+            }
+            const { citation: _citation, ...withoutCitation } = result;
+            results.push(Object.assign(withoutCitation, { snippet, corpus: result.source }));
+          }
+          return jsonResult({ results, citations: citationsMode });
+        }
         const cooldownKey = resolveMemorySearchToolCooldownKey({
           agentId,
           agentSessionKey: options.agentSessionKey,
@@ -829,6 +880,7 @@ export function createMemorySearchTool(options: {
                           agentId,
                           agentSessionKey: options.agentSessionKey,
                           sandboxed: options.sandboxed,
+                          memoryInvocationToken: options.memoryInvocationToken,
                           corpus: requestedCorpus,
                         }),
                     ),
@@ -898,6 +950,7 @@ export function createMemoryGetTool(options: {
   sandboxed?: boolean;
   acquireLocalService?: MemoryCoreAcquireLocalService;
   withLease?: PluginStateLeaseRunner;
+  memoryInvocationToken?: MemoryInvocationToken;
 }) {
   return createMemoryTool({
     options,
@@ -914,6 +967,19 @@ export function createMemoryGetTool(options: {
         const from = readPositiveIntegerParam(rawParams, "from");
         const lines = readPositiveIntegerParam(rawParams, "lines");
         const requestedCorpus = readCorpusParam(rawParams, ["memory", "wiki", "all"]);
+        if (isMemoryInvocationEnforced(options.memoryInvocationToken)) {
+          if (requestedCorpus === "wiki") {
+            return jsonResult({ disabled: true, unavailable: true, error: "memory unavailable" });
+          }
+          return jsonResult(
+            await readAuthorizedMemoryForInvocation({
+              token: options.memoryInvocationToken!,
+              path: relPath,
+              from: from ?? undefined,
+              lines: lines ?? undefined,
+            }),
+          );
+        }
         const { readAgentMemoryFile, resolveMemoryBackendConfig } = await loadMemoryToolRuntime();
         if (requestedCorpus === "wiki") {
           const supplement = await getSupplementMemoryReadResult({
@@ -923,6 +989,7 @@ export function createMemoryGetTool(options: {
             agentId,
             agentSessionKey: options.agentSessionKey,
             sandboxed: options.sandboxed,
+            memoryInvocationToken: options.memoryInvocationToken,
             corpus: requestedCorpus,
           });
           return jsonResult(
@@ -952,6 +1019,7 @@ export function createMemoryGetTool(options: {
             agentId,
             agentSessionKey: options.agentSessionKey,
             sandboxed: options.sandboxed,
+            memoryInvocationToken: options.memoryInvocationToken,
           });
         }
         const memory = await getMemoryManagerContextWithPurpose({
@@ -978,6 +1046,7 @@ export function createMemoryGetTool(options: {
           agentId,
           agentSessionKey: options.agentSessionKey,
           sandboxed: options.sandboxed,
+          memoryInvocationToken: options.memoryInvocationToken,
         });
       },
   });

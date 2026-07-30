@@ -241,20 +241,21 @@ describe("memory access context factory", () => {
     ).toBe(false);
   });
 
-  it("uses the authoritative persisted subject instead of caller identity fields", async () => {
+  it("rejects a subject revision or value that raced the authoritative snapshot", async () => {
     const { create } = createFactory();
-    const context = await create({
-      ...createFacts(),
-      subjectRevision: "forged-subject-revision",
-      subject: {
-        version: 1,
-        kind: "system",
-        principalId: "principal-attacker",
-      },
-    });
-
-    expect(context.subjectRevision).toBe("subject-revision-1");
-    expect(context.subject).toEqual(createAuthoritativeSessionIdentity().subject);
+    await expect(
+      create({ ...createFacts(), subjectRevision: "forged-subject-revision" }),
+    ).rejects.toMatchObject({ code: "session-rebound" });
+    await expect(
+      create({
+        ...createFacts(),
+        subject: {
+          version: 1,
+          kind: "system",
+          principalId: "principal-attacker",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "session-rebound" });
   });
 
   it("fails closed when the authoritative session mapping is absent or rebound", async () => {
@@ -454,6 +455,11 @@ describe("authorized memory plan admission", () => {
         ...plan,
         allowedEgressAudiences: [{ kind: "user" as const, id: "other" }],
       }),
+    ],
+    [
+      "missing delivery audience",
+      "outside-view",
+      (plan: AuthorizedMemoryPlan) => ({ ...plan, allowedEgressAudiences: [] }),
     ],
     [
       "mount agent",

@@ -35,6 +35,7 @@ import {
   indexAppendedTranscriptEventInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
+import { recordTranscriptMemoryPolicyInTransaction } from "./session-transcript-memory-policy.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
@@ -90,6 +91,12 @@ export function appendTranscriptEventInTransaction(
       created_at: createdAt,
     }),
   );
+  const memoryPolicyAuthorized = recordTranscriptMemoryPolicyInTransaction({
+    database,
+    sessionId: scope.sessionId,
+    eventSeq: seq,
+    createdAt,
+  });
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
   }
@@ -99,6 +106,7 @@ export function appendTranscriptEventInTransaction(
     event: persistedEvent,
     eventId: identity?.eventId ?? null,
     createdAt,
+    memoryPolicyAuthorized,
   });
   if (projectionNeedsRebuild) {
     options.onProjectionReconcileNeeded?.();
@@ -209,12 +217,19 @@ function appendTranscriptEventRowInTransaction(
       created_at: createdAt,
     }),
   );
+  const memoryPolicyAuthorized = recordTranscriptMemoryPolicyInTransaction({
+    database,
+    sessionId: scope.sessionId,
+    eventSeq: seq,
+    createdAt,
+  });
   indexAppendedTranscriptEventInTransaction(database.db, {
     sessionId: scope.sessionId,
     seq,
     event: persistedEvent,
     eventId: identity?.eventId ?? null,
     createdAt,
+    memoryPolicyAuthorized,
   });
   if (!identity) {
     return true;

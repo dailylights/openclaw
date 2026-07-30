@@ -3,6 +3,7 @@ import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { resolveRuntimeOsLabel } from "../../../infra/os-summary.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
+import { isMemoryInvocationEnforced } from "../../../plugins/memory-invocation.js";
 import type { ProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import {
   resolveProviderSystemPromptContribution,
@@ -254,6 +255,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     agentId: runtimeInfo.agentId,
     agentSessionKey: runtimeInfo.sessionKey,
     sandboxed: sandboxInfo?.enabled === true,
+    memoryInvocationToken: attempt.memoryInvocationToken,
   });
   const preparedWatchedSessions = prepareWatchedSessionsPrompt({
     enabled: effectivePromptMode === "full",
@@ -265,16 +267,18 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   });
   const activeProjectKeys = attempt.preparedModelRuntime?.activeProjectKeys ?? [];
   const projectMemoryBootstrap =
-    effectivePromptMode === "full" && activeProjectKeys.length > 0
+    effectivePromptMode === "full" &&
+    activeProjectKeys.length > 0 &&
+    !isMemoryInvocationEnforced(attempt.memoryInvocationToken)
       ? await prepareProjectMemoryBootstrap({
           cfg: attempt.config ?? {},
           agentId: params.sessionAgentId,
           activeProjectKeys,
         })
       : [];
-  const projectMemoryWriteInstruction = buildProjectMemoryWriteInstruction(
-    attempt.preparedModelRuntime?.projectKey,
-  );
+  const projectMemoryWriteInstruction = isMemoryInvocationEnforced(attempt.memoryInvocationToken)
+    ? undefined
+    : buildProjectMemoryWriteInstruction(attempt.preparedModelRuntime?.projectKey);
   const extraSystemPrompt =
     [
       attempt.extraSystemPrompt,

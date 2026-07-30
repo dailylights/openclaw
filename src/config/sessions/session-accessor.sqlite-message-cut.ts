@@ -3,6 +3,7 @@ import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/recor
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import { isMemoryIsolationCutoverAgent } from "../../plugins/memory-cutover.js";
 import { extractAssistantVisibleText } from "../../shared/chat-message-content.js";
 import {
   openOpenClawAgentDatabase,
@@ -147,6 +148,9 @@ export async function listSqliteSessionBranches(
     sessionKey: sourceKey,
     ...(params.storePath ? { storePath: params.storePath } : {}),
   });
+  if (isMemoryIsolationCutoverAgent(resolved.agentId)) {
+    return { status: "failed" };
+  }
   try {
     const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
     const currentEntry = readSessionEntryRow(database, sourceKey)?.entry;
@@ -210,6 +214,9 @@ async function mutateSqliteSessionAtMessage(
     sessionKey: sourceKey,
     ...(params.storePath ? { storePath: params.storePath } : {}),
   });
+  if (isMemoryIsolationCutoverAgent(resolved.agentId)) {
+    return { status: "failed" };
+  }
   return await runExclusiveSqliteSessionWrite(resolved, async () => {
     let previousIdentity = new Map<string, SessionEntry>();
     let currentIdentity = new Map<string, SessionEntry>();

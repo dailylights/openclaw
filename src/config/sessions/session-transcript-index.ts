@@ -13,6 +13,7 @@ import {
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 import {
   buildSessionTranscriptProjection,
   extractTranscriptIndexEntry,
@@ -43,6 +44,25 @@ export type SessionTranscriptProjectionState = {
   leafEventId: string | null;
   needsRebuild: boolean;
 };
+
+/** Detects a pre-cutover projection that still references unlabeled raw rows. */
+export function activeTranscriptProjectionContainsUnauthorizedRows(
+  db: DatabaseSync,
+  sessionId: string,
+): boolean {
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(db, sessionId);
+  if (!authorizedSeqs) {
+    return false;
+  }
+  const rows = executeSqliteQuerySync(
+    db,
+    getIndexKysely(db)
+      .selectFrom("session_transcript_active_events")
+      .select("event_seq")
+      .where("session_id", "=", sessionId),
+  ).rows;
+  return rows.some((row) => !authorizedSeqs.has(row.event_seq));
+}
 
 function getIndexKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<TranscriptIndexDatabase>(db);
@@ -178,8 +198,15 @@ export function indexAppendedTranscriptEventInTransaction(
     event: unknown;
     eventId: string | null;
     createdAt: number;
+    memoryPolicyAuthorized?: boolean;
   },
 ): boolean {
+  if (params.memoryPolicyAuthorized === false) {
+    // Pending content advances only the raw transcript watermark; a rebuild
+    // resolves the visible branch without ever indexing the payload.
+    markSessionTranscriptIndexDirtyInTransaction(db, params.sessionId);
+    return true;
+  }
   const watermark = readSessionTranscriptProjectionState(db, params.sessionId);
   if (!watermark) {
     if (params.seq !== 0) {
@@ -326,9 +353,12 @@ function rebuildSessionTranscriptIndexInTransaction(
   sessionId: string,
   rows: readonly SessionTranscriptProjectionSourceRow[],
 ): void {
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(db, sessionId);
+  const projectedRows = authorizedSeqs ? rows.filter((row) => authorizedSeqs.has(row.seq)) : rows;
   const projection = buildSessionTranscriptProjection({
-    rows,
+    rows: projectedRows,
     sessionId,
+    sourceIndexedSeq: rows.at(-1)?.seq ?? -1,
     sourceTranscriptUpdatedAt: null,
   });
   deleteFtsRows(db, sessionId);
@@ -372,7 +402,12 @@ export function reconcileSessionTranscriptIndexInTransaction(
     return false;
   }
   const state = readSessionTranscriptProjectionState(db, sessionId);
-  if (state && !state.needsRebuild && state.indexedSeq === latest.seq) {
+  if (
+    state &&
+    !state.needsRebuild &&
+    state.indexedSeq === latest.seq &&
+    !activeTranscriptProjectionContainsUnauthorizedRows(db, sessionId)
+  ) {
     return false;
   }
   const rows = executeSqliteQuerySync(
@@ -438,7 +473,23 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
       // Grouping transcript_events here made every healthy search rescan the entire history.
       .orderBy("session_windows.session_id"),
   ).rows;
-  return rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : []));
+  const sessionIds = new Set(
+    rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : [])),
+  );
+  const projectedSessions = executeSqliteQuerySync(
+    db,
+    kysely
+      .selectFrom("session_transcript_active_events")
+      .select("session_id")
+      .distinct()
+      .orderBy("session_id"),
+  ).rows;
+  for (const row of projectedSessions) {
+    if (activeTranscriptProjectionContainsUnauthorizedRows(db, row.session_id)) {
+      sessionIds.add(row.session_id);
+    }
+  }
+  return [...sessionIds].toSorted();
 }
 
 /** Drops index rows for sessions whose transcript rows are gone. */

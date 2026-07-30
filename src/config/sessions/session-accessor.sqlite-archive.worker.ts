@@ -12,6 +12,7 @@ import {
   writeSqliteTranscriptArchive,
 } from "./session-accessor.sqlite-archive.js";
 import { readSqliteSessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 import { serializeJsonlLines } from "./transcript-jsonl.js";
 
 type TranscriptArchiveDatabase = Pick<OpenClawAgentKyselyDatabase, "transcript_events">;
@@ -92,14 +93,18 @@ function readTranscriptArchiveContent(
   sessionId: string,
 ): string {
   const db = getNodeSqliteKysely<TranscriptArchiveDatabase>(database);
-  const lines = executeSqliteQuerySync(
+  const rows = executeSqliteQuerySync(
     database,
     db
       .selectFrom("transcript_events")
-      .select("event_json")
+      .select(["event_json", "seq"])
       .where("session_id", "=", sessionId)
       .orderBy("seq", "asc"),
-  ).rows.map((row) => row.event_json);
+  ).rows;
+  const authorizedSeqs = readAuthorizedTranscriptEventSeqs(database, sessionId);
+  const lines = rows
+    .filter((row) => !authorizedSeqs || authorizedSeqs.has(row.seq))
+    .map((row) => row.event_json);
   return serializeJsonlLines(lines);
 }
 

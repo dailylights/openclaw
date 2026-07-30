@@ -411,7 +411,7 @@ describe("memory tools", () => {
   });
 
   it.each(["wiki", "all"] as const)(
-    "forwards effective agent context to memory_search corpus=%s supplements",
+    "forwards the invocation context to memory_search corpus=%s supplements",
     async (corpus) => {
       const search = vi.fn(async () => [
         {
@@ -450,6 +450,7 @@ describe("memory tools", () => {
         agentId: "marketing-agent",
         agentSessionKey: "agent:marketing-agent:main",
         sandboxed: true,
+        memoryInvocationToken: undefined,
         corpus,
       });
     },
@@ -750,7 +751,7 @@ describe("memory tools", () => {
   });
 
   it.each(["wiki", "all"] as const)(
-    "forwards effective agent context to memory_get corpus=%s supplements",
+    "forwards the invocation context to memory_get corpus=%s supplements",
     async (corpus) => {
       if (corpus === "all") {
         setMemoryReadFileImpl(async () => {
@@ -795,6 +796,7 @@ describe("memory tools", () => {
         agentId: "marketing-agent",
         agentSessionKey: "agent:marketing-agent:main",
         sandboxed: true,
+        memoryInvocationToken: undefined,
         corpus,
       });
     },

@@ -33,7 +33,7 @@ import {
   resolveSqliteParentForkSourceTranscript,
   type SqliteParentForkSourceTranscript,
 } from "./session-accessor.sqlite-parent-fork.js";
-import { loadSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
+import { loadVisibleSqliteTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
   cloneSessionEntry,
   formatLegacySqliteSessionMarkerForScope,
@@ -114,7 +114,7 @@ export async function forkSqliteSessionTranscriptFromParent(
         return { status: "failed" };
       }
       const source = resolveSqliteParentForkSourceTranscript(
-        loadSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
+        loadVisibleSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
       );
       if (!source) {
         return { status: "failed" };
@@ -199,7 +199,7 @@ export async function forkSqliteSessionEntryFromParentTarget(
       parent.entry.sessionId.length > 0;
     const transcriptParentTokens = needsTranscriptTokenEstimate
       ? estimateSqliteTranscriptPromptTokens(
-          loadSqliteTranscriptEventsFromDatabase(database, parent.entry.sessionId),
+          loadVisibleSqliteTranscriptEventsFromDatabase(database, parent.entry.sessionId),
         )
       : undefined;
     const decision = resolveSqliteParentForkDecision(parent.entry, transcriptParentTokens);
@@ -401,7 +401,7 @@ export async function resolveSqliteSessionParentForkDecision(params: {
   return resolveSqliteParentForkDecision(
     params.parentEntry,
     estimateSqliteTranscriptPromptTokens(
-      loadSqliteTranscriptEventsFromDatabase(database, parentSessionId),
+      loadVisibleSqliteTranscriptEventsFromDatabase(database, parentSessionId),
     ),
   );
 }
@@ -431,7 +431,7 @@ function forkSqliteParentTranscriptInTransaction(
     return { status: "failed" };
   }
   const source = resolveSqliteParentForkSourceTranscript(
-    loadSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
+    loadVisibleSqliteTranscriptEventsFromDatabase(database, params.parentEntry.sessionId),
   );
   if (!source) {
     return { status: "failed" };

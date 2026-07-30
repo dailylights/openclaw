@@ -105,6 +105,30 @@ describe("SQLite transcript archive worker", () => {
     );
   });
 
+  it("does not archive unlabeled transcript content after memory cutover", async () => {
+    const sessionId = "cutover-unlabeled-archive-session";
+    const sessionKey = "agent:main:cutover-unlabeled-archive";
+    await replaceSessionEntry({ sessionKey, storePath }, { sessionId, updatedAt: Date.now() });
+    await replaceSqliteTranscriptEvents({ sessionKey, sessionId, storePath }, [
+      createTranscriptEvent(sessionId, "must remain unavailable"),
+    ]);
+    const database = openLifecycleTestDatabase(storePath);
+    database.db
+      .prepare(
+        `INSERT INTO memory_migrations
+          (migration_id, source_kind, source_hash, phase, classification_json, plan_hash,
+           verified_at, cutover_at, updated_at)
+         VALUES (?, ?, ?, 'cutover', '{}', ?, 1, 1, 1)`,
+      )
+      .run("cutover-unlabeled-archive", "test", "source", "plan");
+
+    const materialized = await materializeSqliteSessionStateDeletePlans([
+      planArchiveWorker(database, path.dirname(storePath), sessionId),
+    ]);
+
+    expect(materialized[0]?.archivedTranscript).toBeNull();
+  });
+
   it("publishes a durable archive before lifecycle deletion", async () => {
     const sessionId = "durable-delete-session";
     const sessionKey = "agent:main:durable-delete";

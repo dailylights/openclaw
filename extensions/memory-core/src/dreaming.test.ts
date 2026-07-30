@@ -32,8 +32,17 @@ const runDreamingSweepPhasesMock = vi.hoisted(() =>
     pendingNarratives: 0,
   })),
 );
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
 vi.mock("./dreaming-phases.js", () => ({
   runDreamingSweepPhases: runDreamingSweepPhasesMock,
+}));
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
 }));
 
 const constants = {
@@ -58,6 +67,8 @@ const { createTempWorkspace } = createMemoryCoreTestHarness();
 
 afterEach(() => {
   resetSystemEventsForTest();
+  cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+  cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
 });
 
 function clearInternalHooks(): void {}
@@ -1719,6 +1730,76 @@ describe("gateway startup reconciliation", () => {
       )[0];
       expect(sweepArgs.agentId).toBe("researcher");
       expect(sweepArgs.workspaceDir).toBe(workspaceDir);
+    } finally {
+      clearInternalHooks();
+    }
+  });
+
+  it("skips a shared workspace as soon as one roster member is cut over", async () => {
+    clearInternalHooks();
+    const legacyWorkspace = await createTempWorkspace("openclaw-dreaming-legacy-");
+    const sharedWorkspace = await createTempWorkspace("openclaw-dreaming-shared-");
+    const logger = createLogger();
+    const harness = createCronHarness();
+    const onMock = vi.fn();
+    runDreamingSweepPhasesMock.mockClear();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockImplementation(
+      (agentId: string) => agentId === "cutover",
+    );
+    const api: DreamingPluginApiTestDouble = {
+      config: {
+        agents: {
+          list: [
+            { id: "legacy", default: true, workspace: legacyWorkspace },
+            { id: "cutover", workspace: sharedWorkspace },
+            { id: "legacy-peer", workspace: sharedWorkspace },
+          ],
+        },
+        plugins: {
+          entries: {
+            "memory-core": {
+              config: {
+                dreaming: {
+                  enabled: true,
+                  limit: 5,
+                  phases: {
+                    light: { enabled: false },
+                    rem: { enabled: false },
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      pluginConfig: {},
+      logger,
+      runtime: {},
+      on: onMock,
+    };
+
+    try {
+      registerShortTermPromotionDreamingForTest(api);
+      await triggerGatewayStart(onMock, { config: api.config, getCron: () => harness.cron });
+
+      await getBeforeAgentReplyHandler(onMock)(
+        { cleanedBody: constants.DREAMING_SYSTEM_EVENT_TEXT },
+        {
+          trigger: "cron",
+          agentId: "legacy",
+          workspaceDir: legacyWorkspace,
+          sessionKey: "agent:legacy:cron:memory-dreaming",
+        },
+      );
+
+      expect(runDreamingSweepPhasesMock).toHaveBeenCalledTimes(1);
+      expect(runDreamingSweepPhasesMock.mock.calls[0]?.[0]).toMatchObject({
+        agentId: "legacy",
+        workspaceDir: legacyWorkspace,
+      });
+      expect(runDreamingSweepPhasesMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceDir: sharedWorkspace }),
+      );
     } finally {
       clearInternalHooks();
     }

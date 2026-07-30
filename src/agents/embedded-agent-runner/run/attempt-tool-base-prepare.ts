@@ -1,5 +1,6 @@
 import { messageToolOwnsVisibleReply } from "../../../auto-reply/source-reply-delivery-mode.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
+import { isMemoryInvocationEnforced } from "../../../plugins/memory-invocation.js";
 import { extractModelCompat } from "../../../plugins/provider-model-compat.js";
 import { getPluginToolMeta } from "../../../plugins/tools.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
@@ -237,6 +238,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
               : undefined,
           sessionId: attempt.sessionId,
           runId: attempt.runId,
+          memoryInvocationToken: attempt.memoryInvocationToken,
           conversationRecall: attempt.conversationRecall,
           approvalReviewerDeviceId: attempt.approvalReviewerDeviceId,
           oneShotCliRun: attempt.oneShotCliRun,
@@ -319,9 +321,33 @@ export function prepareEmbeddedAttemptToolBase(params: {
         params.markCoreToolStage("attempt:tools-allow");
         return filteredTools;
       })();
-  const toolsRaw = attempt.forceRestartSafeTools
-    ? constructedToolsRaw.filter((tool) => isAgentToolRestartSafe(tool, restartSafetyOptions))
+  const memoryIsolatedTools = isMemoryInvocationEnforced(attempt.memoryInvocationToken)
+    ? constructedToolsRaw.filter((tool) => {
+        const name = tool.name.toLowerCase();
+        return !(
+          [
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "exec",
+            "process",
+            "memory_recall",
+            "memory_store",
+            "memory_forget",
+            "intent",
+            "subagents",
+            "transcripts",
+          ].includes(name) ||
+          name.startsWith("wiki_") ||
+          name.startsWith("sessions_") ||
+          name.startsWith("conversations_")
+        );
+      })
     : constructedToolsRaw;
+  const toolsRaw = attempt.forceRestartSafeTools
+    ? memoryIsolatedTools.filter((tool) => isAgentToolRestartSafe(tool, restartSafetyOptions))
+    : memoryIsolatedTools;
   if (attempt.forceRestartSafeTools) {
     log.info(
       `restart-safe recovery tool policy retained ${toolsRaw.length}/${constructedToolsRaw.length} concrete tools`,

@@ -1,7 +1,7 @@
 // Memory Wiki tests cover index plugin behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "./api.js";
 import plugin from "./index.js";
 import {
@@ -36,11 +36,25 @@ const toolMocks = vi.hoisted(() => {
   };
 });
 
+const cutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
 vi.mock("./src/tool.js", () => toolMocks);
+
+vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>()),
+  ...cutoverMocks,
+}));
 
 const { createPluginApi, createTempDir } = createMemoryWikiTestHarness();
 
 describe("memory-wiki plugin", () => {
+  beforeEach(() => {
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
+  });
+
   it("registers prompt supplement, gateway methods, tools, and wiki cli surface", () => {
     const {
       api,
@@ -181,6 +195,58 @@ describe("memory-wiki plugin", () => {
           conversationRecall,
         },
       });
+    }
+  });
+
+  it("blocks every wiki read surface when a global vault has a cutover roster member", async () => {
+    const rootDir = await createTempDir("memory-wiki-index-cutover-");
+    const appConfig = {
+      agents: { list: [{ id: "legacy", default: true }, { id: "cutover" }] },
+    } as OpenClawConfig;
+    cutoverMocks.isMemoryIsolationCutoverAgent.mockImplementation(
+      (agentId: string) => agentId === "cutover",
+    );
+    const {
+      api,
+      registerMemoryCorpusSupplement,
+      registerMemoryPromptPreparation,
+      registerMemoryPromptSupplement,
+      registerTool,
+    } = createPluginApi();
+    api.config = appConfig;
+    api.pluginConfig = { vault: { scope: "global", path: rootDir } };
+    Object.assign(api.runtime, { config: { current: () => appConfig } });
+
+    plugin.register(api);
+
+    const promptBuilder = registerMemoryPromptSupplement.mock.calls[0]?.[0] as (params: {
+      agentId?: string;
+      availableTools: ReadonlySet<string>;
+    }) => string[];
+    const promptPreparer = registerMemoryPromptPreparation.mock.calls[0]?.[0] as (params: {
+      agentId?: string;
+      availableTools: ReadonlySet<string>;
+      sandboxed?: boolean;
+    }) => Promise<string[]>;
+    const corpusSupplement = registerMemoryCorpusSupplement.mock.calls[0]?.[0] as {
+      get: (params: { agentId?: string; lookup: string }) => Promise<unknown>;
+      search: (params: { agentId?: string; query: string }) => Promise<unknown>;
+    };
+
+    expect(
+      promptBuilder({ agentId: "legacy", availableTools: new Set(["memory_search"]) }),
+    ).toEqual([]);
+    await expect(
+      promptPreparer({ agentId: "legacy", availableTools: new Set(), sandboxed: false }),
+    ).resolves.toEqual([]);
+    await expect(corpusSupplement.search({ agentId: "legacy", query: "private" })).resolves.toEqual(
+      [],
+    );
+    await expect(
+      corpusSupplement.get({ agentId: "legacy", lookup: "private" }),
+    ).resolves.toBeNull();
+    for (const [factory] of registerTool.mock.calls) {
+      expect(factory({ agentId: "legacy" })).toBeNull();
     }
   });
 

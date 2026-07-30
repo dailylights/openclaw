@@ -31,7 +31,7 @@ const AUTHORIZED_MEMORY_READ_CAPABILITIES = [
   "egressReceipts",
 ] as const satisfies readonly MemoryAuthorizationCapabilityName[];
 
-type AdmittedAuthorizedMemoryReadRuntime = Readonly<
+export type AdmittedAuthorizedMemoryReadRuntime = Readonly<
   Pick<
     AuthorizedMemoryRuntime,
     "authorization" | "authorize" | "searchAuthorized" | "readAuthorized"

@@ -29,6 +29,7 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import { emitCommittedSessionIdentityDiff } from "./session-accessor.sqlite-identity.js";
 import {
+  loadVisibleSqliteTranscriptEventsFromDatabase,
   readSqliteTranscriptEventRows,
   readSqliteTranscriptSnapshot,
   type SqliteTranscriptSnapshotRow,
@@ -55,6 +56,7 @@ import {
 } from "./session-accessor.sqlite-transcript-store.js";
 import type { SessionTranscriptWriteTransactionContext } from "./session-accessor.types.js";
 import type { TrustedSessionMemorySubjectSeed } from "./session-memory-subject.js";
+import { isTranscriptMemoryPolicyEnforcedInDatabase } from "./session-transcript-memory-policy.js";
 import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -516,15 +518,25 @@ export async function withSqliteTranscriptWriteLock<T>(
   const resolved = resolveSqliteTranscriptScope(scope);
   return await runExclusiveSqliteSessionWrite(resolved, async () => {
     const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+    const memoryPolicyEnforced = isTranscriptMemoryPolicyEnforcedInDatabase(database.db);
     let transcriptSnapshot: SqliteTranscriptSnapshotState | undefined;
     return await run({
       readEvents: async () => {
         const snapshot = readSqliteTranscriptSnapshot(database, resolved.sessionId);
         transcriptSnapshot = { kind: "current", rows: snapshot.rows };
-        return snapshot.events;
+        return memoryPolicyEnforced
+          ? loadVisibleSqliteTranscriptEventsFromDatabase(database, resolved.sessionId)
+          : snapshot.events;
       },
       readMessageFacts: async (params) => readTranscriptMirrorFacts(database, resolved, params),
       replaceEvents: async (events) => {
+        if (memoryPolicyEnforced) {
+          // A caller can only read the filtered view. Replacing from that view
+          // would delete pending or denied rows, so transcript derivations stop here.
+          throw new Error(
+            "transcript rewrite unavailable while memory policy enforcement is active",
+          );
+        }
         if (transcriptSnapshot?.kind === "stale") {
           throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
         }

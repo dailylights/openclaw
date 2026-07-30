@@ -323,6 +323,7 @@ export type MemoryExposureReceipt = DeepReadonly<{
   runId: string;
   runExposureRevision: string;
   sourcePolicySetId: string;
+  /** Immutable `AuthorizedResourceHandle.resourceRevision` values, never ephemeral handle IDs. */
   exposedRevisionHandles: readonly string[];
   recordedAt: string;
 }>;
