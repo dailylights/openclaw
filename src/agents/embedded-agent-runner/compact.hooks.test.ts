@@ -29,6 +29,7 @@ import {
   getMemorySearchManagerMock,
   guardSessionManagerMock,
   hookRunner,
+  isMemoryIsolationCutoverAgentMock,
   listRegisteredPluginAgentPromptGuidanceMock,
   loadCompactHooksHarness,
   maybeCompactAgentHarnessSessionMock,
@@ -360,6 +361,30 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
     expect(lockOptions.sessionFile).not.toBe(TEST_SESSION_KEY);
     expect(lockOptions).not.toHaveProperty("allowReentrant");
+  });
+
+  it("denies cutover compaction before model or context-engine dispatch", async () => {
+    isMemoryIsolationCutoverAgentMock.mockReturnValue(true);
+
+    await expect(compactEmbeddedAgentSessionDirect(wrappedCompactionArgs())).resolves.toMatchObject(
+      {
+        ok: false,
+        compacted: false,
+        failure: { reason: "scoped_memory_derivation_unavailable" },
+      },
+    );
+    expect(resolveModelAsyncMock).not.toHaveBeenCalled();
+    expect(createAgentSessionMock).not.toHaveBeenCalled();
+
+    await expect(
+      compactEmbeddedAgentSession(wrappedCompactionArgs({ trigger: "budget" })),
+    ).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      failure: { reason: "scoped_memory_derivation_unavailable" },
+    });
+    expect(resolveContextEngineMock).not.toHaveBeenCalled();
+    expect(contextEngineCompactMock).not.toHaveBeenCalled();
   });
 
   it("reuses the matching logical writer lock during direct compaction", async () => {

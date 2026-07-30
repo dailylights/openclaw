@@ -323,6 +323,7 @@ async function compactCliTranscript(params: {
       {
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
+        agentId: params.agentId,
         sessionTarget: {
           sessionId: params.sessionId,
           sessionKey: params.sessionKey,

@@ -6,6 +6,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CompactResult, ContextEngine } from "../../context-engine/types.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { withTimeout } from "../../node-host/with-timeout.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { resolveScopedMemoryCompactionDenial } from "../compaction-memory-derivation.js";
 
 const EMBEDDED_COMPACTION_TIMEOUT_MS = 180_000;
 
@@ -122,13 +124,21 @@ type ContextEngineCompactParams = Parameters<ContextEngine["compact"]>[0];
  * Callers keep their existing try/catch — a timeout or abort surfaces as a
  * thrown error, never a silent hang.
  */
-export function compactContextEngineWithSafetyTimeout(
+export async function compactContextEngineWithSafetyTimeout(
   contextEngine: Pick<ContextEngine, "compact">,
   params: ContextEngineCompactParams,
   timeoutMs: number = EMBEDDED_COMPACTION_TIMEOUT_MS,
   abortSignal?: AbortSignal,
 ): Promise<CompactResult> {
-  return compactWithSafetyTimeout(
+  const agentId =
+    params.agentId?.trim() ??
+    params.sessionTarget?.agentId?.trim() ??
+    parseAgentSessionKey(params.sessionKey)?.agentId;
+  const scopedMemoryDenial = resolveScopedMemoryCompactionDenial(agentId);
+  if (scopedMemoryDenial) {
+    return scopedMemoryDenial;
+  }
+  return await compactWithSafetyTimeout(
     (compactAbortSignal) =>
       contextEngine.compact(
         compactAbortSignal ? { ...params, abortSignal: compactAbortSignal } : params,

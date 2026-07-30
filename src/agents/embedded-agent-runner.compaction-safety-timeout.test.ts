@@ -1,6 +1,15 @@
 // Covers safety timeouts around embedded-agent compaction calls.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompactResult, ContextEngine } from "../context-engine/types.js";
+
+const memoryCutoverMocks = vi.hoisted(() => ({
+  isMemoryIsolationCutoverAgent: vi.fn<(agentId: string) => boolean>(() => false),
+}));
+
+vi.mock("../plugins/memory-cutover.js", () => ({
+  isMemoryIsolationCutoverAgent: memoryCutoverMocks.isMemoryIsolationCutoverAgent,
+}));
+
 import {
   compactContextEngineWithSafetyTimeout,
   compactWithSafetyTimeout,
@@ -13,6 +22,8 @@ describe("compactWithSafetyTimeout", () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllTimers();
+    memoryCutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    memoryCutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -190,6 +201,8 @@ describe("compactContextEngineWithSafetyTimeout", () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllTimers();
+    memoryCutoverMocks.isMemoryIsolationCutoverAgent.mockReset();
+    memoryCutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -220,6 +233,20 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     await expect(compactContextEngineWithSafetyTimeout({ compact }, baseParams, 30)).resolves.toBe(
       result,
     );
+  });
+
+  it("does not dispatch a plugin compactor after scoped-memory cutover", async () => {
+    memoryCutoverMocks.isMemoryIsolationCutoverAgent.mockReturnValue(true);
+    const compact = vi.fn<CompactFn>(async () => ({ ok: true, compacted: true }));
+
+    await expect(
+      compactContextEngineWithSafetyTimeout({ compact }, { ...baseParams, agentId: "main" }, 30),
+    ).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      failure: { reason: "scoped_memory_derivation_unavailable" },
+    });
+    expect(compact).not.toHaveBeenCalled();
   });
 
   it("threads a signal that follows the run abort signal into the plugin compact() params", async () => {

@@ -13,6 +13,7 @@ import {
   resolveRunModelFallbacksOverride,
   resolveSessionAgentIds,
 } from "../agent-scope.js";
+import { resolveScopedMemoryCompactionDenial } from "../compaction-memory-derivation.js";
 import { hasMeaningfulConversationContent } from "../compaction-real-conversation.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { coerceToFailoverError } from "../failover-error.js";
@@ -148,6 +149,10 @@ export async function compactEmbeddedAgentSessionDirect(
     config: requestedParams.config,
     agentId: requestedParams.agentId,
   });
+  const scopedMemoryDenial = resolveScopedMemoryCompactionDenial(requestedAgentIds.sessionAgentId);
+  if (scopedMemoryDenial) {
+    return scopedMemoryDenial;
+  }
   const requestedAgentDir =
     requestedParams.agentDir ??
     resolveAgentDir(requestedParams.config ?? {}, requestedAgentIds.sessionAgentId);

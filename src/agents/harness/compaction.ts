@@ -7,6 +7,7 @@ import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
+import { resolveScopedMemoryCompactionDenial } from "../compaction-memory-derivation.js";
 import type { CompactEmbeddedAgentSessionParams } from "../embedded-agent-runner/compact.types.js";
 import { resolveModelAsync } from "../embedded-agent-runner/model.js";
 import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
@@ -379,6 +380,11 @@ export async function maybeCompactAgentHarnessSession(
   params: CompactEmbeddedAgentSessionParams,
   options: InternalAgentHarnessCompactionOptions = {},
 ): Promise<EmbeddedAgentCompactResult | undefined> {
+  const compactIdentity = resolveHarnessCompactIdentity(params);
+  const scopedMemoryDenial = resolveScopedMemoryCompactionDenial(compactIdentity.agentId);
+  if (scopedMemoryDenial) {
+    return scopedMemoryDenial;
+  }
   const selectedRuntime = normalizeOptionalAgentRuntimeId(params.agentHarnessId);
   const pinnedHarnessId =
     selectedRuntime && !isDefaultAgentRuntimeId(selectedRuntime) ? selectedRuntime : undefined;
@@ -463,7 +469,6 @@ export async function maybeCompactAgentHarnessSession(
     }
     return undefined;
   }
-  const compactIdentity = resolveHarnessCompactIdentity(params);
   let resolvedRuntimeAuthPlan = runtimeAuthPlan;
   const compactParams = {
     ...params,
