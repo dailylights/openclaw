@@ -1043,6 +1043,577 @@ BEGIN
   SELECT RAISE(ABORT, 'memory audit outbox identity is immutable');
 END;
 
+-- A projection is a reviewed, named copy. Its target is deliberately stored as
+-- one audience row; the trigger below rejects wildcard, private, and cross-agent
+-- encodings even when a caller bypasses the higher-level authorization plan.
+CREATE TABLE IF NOT EXISTS memory_projections (
+  projection_id TEXT NOT NULL PRIMARY KEY,
+  agent_id TEXT NOT NULL CHECK (length(trim(agent_id)) > 0),
+  source_revision_id TEXT NOT NULL CHECK (length(trim(source_revision_id)) > 0),
+  target_agent_id TEXT NOT NULL CHECK (target_agent_id = agent_id),
+  target_store_id TEXT NOT NULL CHECK (length(trim(target_store_id)) > 0),
+  target_resource_id TEXT NOT NULL CHECK (length(trim(target_resource_id)) > 0),
+  target_revision_id TEXT NOT NULL CHECK (length(trim(target_revision_id)) > 0),
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('conversation', 'role', 'agent-shared')),
+  target_audience_id TEXT NOT NULL CHECK (length(trim(target_audience_id)) > 0),
+  purpose TEXT NOT NULL CHECK (length(trim(purpose)) > 0),
+  preview TEXT NOT NULL CHECK (length(trim(preview)) > 0),
+  publisher_kind TEXT NOT NULL CHECK (publisher_kind IN ('local-agent-owner', 'gateway-admin')),
+  publisher_id TEXT NOT NULL CHECK (length(trim(publisher_id)) > 0),
+  review_state TEXT NOT NULL CHECK (review_state IN ('pending', 'approved', 'rejected', 'revoked')),
+  reviewer_kind TEXT CHECK (reviewer_kind IS NULL OR reviewer_kind IN ('local-agent-owner', 'gateway-admin')),
+  reviewer_id TEXT CHECK (reviewer_id IS NULL OR length(trim(reviewer_id)) > 0),
+  review_reason TEXT CHECK (review_reason IS NULL OR length(trim(review_reason)) > 0),
+  expires_at INTEGER NOT NULL,
+  revocation_behavior TEXT NOT NULL CHECK (revocation_behavior = 'tombstone'),
+  supersedes_projection_id TEXT,
+  created_at INTEGER NOT NULL,
+  reviewed_at INTEGER,
+  revoked_at INTEGER,
+  CHECK (source_revision_id <> target_revision_id),
+  CHECK (expires_at > created_at),
+  CHECK (supersedes_projection_id IS NULL OR supersedes_projection_id <> projection_id),
+  CHECK (
+    (review_state = 'pending'
+      AND reviewer_kind IS NULL
+      AND reviewer_id IS NULL
+      AND review_reason IS NULL
+      AND reviewed_at IS NULL
+      AND revoked_at IS NULL)
+    OR
+    (review_state = 'approved'
+      AND reviewer_kind IS NOT NULL
+      AND reviewer_id IS NOT NULL
+      AND reviewed_at IS NOT NULL
+      AND revoked_at IS NULL)
+    OR
+    (review_state = 'rejected'
+      AND reviewer_kind IS NOT NULL
+      AND reviewer_id IS NOT NULL
+      AND review_reason IS NOT NULL
+      AND reviewed_at IS NOT NULL
+      AND revoked_at IS NULL)
+    OR
+    (review_state = 'revoked'
+      AND reviewer_kind IS NOT NULL
+      AND reviewer_id IS NOT NULL
+      AND reviewed_at IS NOT NULL
+      AND revoked_at IS NOT NULL)
+  ),
+  CHECK (reviewed_at IS NULL OR reviewed_at >= created_at),
+  CHECK (revoked_at IS NULL OR (reviewed_at IS NOT NULL AND revoked_at >= reviewed_at)),
+  FOREIGN KEY (source_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_store_id) REFERENCES memory_stores(store_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_resource_id) REFERENCES memory_resources(resource_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (supersedes_projection_id) REFERENCES memory_projections(projection_id) ON DELETE RESTRICT,
+  UNIQUE (target_revision_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_projections_source
+  ON memory_projections(agent_id, source_revision_id, review_state, expires_at, projection_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_projections_target
+  ON memory_projections(agent_id, target_kind, target_audience_id, review_state, expires_at, projection_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_projections_supersedes
+  ON memory_projections(supersedes_projection_id, projection_id)
+  WHERE supersedes_projection_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_target_matches_copy
+BEFORE INSERT ON memory_projections
+BEGIN
+  SELECT CASE WHEN new.review_state <> 'pending'
+    THEN RAISE(ABORT, 'memory projections must begin pending') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions AS source_revision
+    JOIN memory_resources AS source_resource ON source_resource.resource_id = source_revision.resource_id
+    WHERE source_revision.revision_id = new.source_revision_id
+      AND source_resource.agent_id = new.agent_id
+  ) THEN RAISE(ABORT, 'memory projection source must belong to its agent') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_stores
+    WHERE store_id = new.target_store_id
+      AND agent_id = new.target_agent_id
+      AND audience_kind = new.target_kind
+      AND audience_id = new.target_audience_id
+  ) THEN RAISE(ABORT, 'memory projection target must be a same-agent named store') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resources
+    WHERE resource_id = new.target_resource_id
+      AND agent_id = new.target_agent_id
+      AND store_id = new.target_store_id
+  ) THEN RAISE(ABORT, 'memory projection copy resource must belong to its target store') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions
+    WHERE revision_id = new.target_revision_id
+      AND resource_id = new.target_resource_id
+  ) THEN RAISE(ABORT, 'memory projection copy revision must belong to its target resource') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions
+    WHERE revision_id = new.target_revision_id
+      AND resource_id = new.target_resource_id
+      AND lifecycle_state = 'pending'
+  ) THEN RAISE(ABORT, 'memory projection copy revision must begin pending') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_immutable_identity
+BEFORE UPDATE OF projection_id, agent_id, source_revision_id, target_agent_id, target_store_id,
+  target_resource_id, target_revision_id, target_kind, target_audience_id, purpose, preview,
+  publisher_kind, publisher_id, expires_at, revocation_behavior, supersedes_projection_id, created_at
+ON memory_projections
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection identity is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_review_transition
+BEFORE UPDATE OF review_state ON memory_projections
+WHEN NOT (
+  (old.review_state = 'pending' AND new.review_state IN ('pending', 'approved', 'rejected'))
+  OR (old.review_state = 'approved' AND new.review_state IN ('approved', 'revoked'))
+  OR (old.review_state = 'rejected' AND new.review_state = 'rejected')
+  OR (old.review_state = 'revoked' AND new.review_state = 'revoked')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection review state cannot be reopened');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_approval_requires_active_copy
+BEFORE UPDATE OF review_state ON memory_projections
+WHEN old.review_state = 'pending'
+  AND new.review_state = 'approved'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions
+    WHERE revision_id = new.target_revision_id
+      AND resource_id = new.target_resource_id
+      AND lifecycle_state = 'active'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection approval requires an active copy');
+END;
+
+-- New names layer over the prior terminal trigger in existing development DBs.
+-- Reviewer audit fields stay fixed even when an approved projection is revoked.
+CREATE TRIGGER IF NOT EXISTS memory_projections_reviewer_metadata_immutable
+BEFORE UPDATE OF reviewer_kind, reviewer_id, review_reason, reviewed_at ON memory_projections
+WHEN old.review_state <> 'pending'
+  AND (
+    new.reviewer_kind IS NOT old.reviewer_kind
+    OR new.reviewer_id IS NOT old.reviewer_id
+    OR new.review_reason IS NOT old.review_reason
+    OR new.reviewed_at IS NOT old.reviewed_at
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection review metadata is immutable after review');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_revoked_at_transition
+BEFORE UPDATE OF revoked_at ON memory_projections
+WHEN old.revoked_at IS NOT new.revoked_at
+  AND NOT (
+    old.review_state = 'approved'
+    AND new.review_state = 'revoked'
+    AND old.revoked_at IS NULL
+    AND new.revoked_at IS NOT NULL
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection revocation timestamp can only be set on revocation');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projections_no_delete
+BEFORE DELETE ON memory_projections
+BEGIN
+  SELECT RAISE(ABORT, 'memory projections cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS memory_projection_exposures (
+  projection_id TEXT NOT NULL,
+  exposure_receipt_id TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  PRIMARY KEY (projection_id, exposure_receipt_id),
+  FOREIGN KEY (projection_id) REFERENCES memory_projections(projection_id) ON DELETE RESTRICT,
+  FOREIGN KEY (exposure_receipt_id) REFERENCES memory_exposure_receipts(receipt_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_projection_exposures_projection
+  ON memory_projection_exposures(projection_id, recorded_at, exposure_receipt_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_projection_exposures_receipt
+  ON memory_projection_exposures(exposure_receipt_id, projection_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_projection_exposures_no_update
+BEFORE UPDATE ON memory_projection_exposures
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection exposures are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_projection_exposures_no_delete
+BEFORE DELETE ON memory_projection_exposures
+BEGIN
+  SELECT RAISE(ABORT, 'memory projection exposures cannot be deleted');
+END;
+
+-- Missing settings mean off. A persisted row records the only enabled first-rollout
+-- posture and the durable limits used by the postbox deposit decision.
+CREATE TABLE IF NOT EXISTS memory_sharing_settings (
+  agent_id TEXT NOT NULL PRIMARY KEY CHECK (length(trim(agent_id)) > 0),
+  postbox_mode TEXT NOT NULL DEFAULT 'off' CHECK (postbox_mode IN ('off', 'review-required')),
+  rate_limit_window_ms INTEGER NOT NULL DEFAULT 3600000 CHECK (rate_limit_window_ms > 0),
+  rate_limit_max_items INTEGER NOT NULL DEFAULT 10 CHECK (rate_limit_max_items > 0),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (updated_at >= created_at)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS memory_postbox_items (
+  postbox_item_id TEXT NOT NULL PRIMARY KEY,
+  agent_id TEXT NOT NULL CHECK (length(trim(agent_id)) > 0),
+  target_agent_id TEXT NOT NULL CHECK (target_agent_id = agent_id),
+  target_store_id TEXT NOT NULL CHECK (length(trim(target_store_id)) > 0),
+  target_kind TEXT NOT NULL CHECK (target_kind = 'user'),
+  target_audience_id TEXT NOT NULL CHECK (length(trim(target_audience_id)) > 0),
+  target_user_id TEXT NOT NULL CHECK (target_user_id = target_audience_id),
+  target_user_evidence_revision TEXT NOT NULL CHECK (length(trim(target_user_evidence_revision)) > 0),
+  target_resource_id TEXT,
+  target_revision_id TEXT,
+  source_conversation_id TEXT NOT NULL CHECK (length(trim(source_conversation_id)) > 0),
+  source_message_handle_hash TEXT NOT NULL CHECK (length(source_message_handle_hash) = 64),
+  source_event_id TEXT CHECK (source_event_id IS NULL OR length(trim(source_event_id)) > 0),
+  source_actor_kind TEXT NOT NULL CHECK (source_actor_kind IN ('human', 'agent', 'service')),
+  source_actor_id TEXT NOT NULL CHECK (length(trim(source_actor_id)) > 0),
+  source_evidence_revision TEXT NOT NULL CHECK (length(trim(source_evidence_revision)) > 0),
+  provenance_label TEXT NOT NULL CHECK (length(trim(provenance_label)) > 0),
+  content TEXT NOT NULL CHECK (length(trim(content)) > 0),
+  content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+  review_content TEXT NOT NULL CHECK (length(trim(review_content)) > 0),
+  review_content_hash TEXT NOT NULL CHECK (length(review_content_hash) = 64),
+  review_state TEXT NOT NULL CHECK (review_state IN ('pending', 'approved', 'rejected', 'purged')),
+  reviewer_kind TEXT CHECK (reviewer_kind IS NULL OR reviewer_kind IN ('local-agent-owner', 'gateway-admin')),
+  reviewer_id TEXT CHECK (reviewer_id IS NULL OR length(trim(reviewer_id)) > 0),
+  review_reason TEXT CHECK (review_reason IS NULL OR length(trim(review_reason)) > 0),
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  reviewed_at INTEGER,
+  purged_at INTEGER,
+  CHECK (expires_at > created_at),
+  CHECK (updated_at >= created_at),
+  CHECK (
+    (target_resource_id IS NULL AND target_revision_id IS NULL)
+    OR (target_resource_id IS NOT NULL AND target_revision_id IS NOT NULL)
+  ),
+  CHECK (
+    (review_state = 'pending'
+      AND reviewer_kind IS NULL
+      AND reviewer_id IS NULL
+      AND review_reason IS NULL
+      AND reviewed_at IS NULL
+      AND purged_at IS NULL)
+    OR
+    (review_state = 'approved'
+      AND reviewer_kind IS NOT NULL
+      AND reviewer_id IS NOT NULL
+      AND reviewed_at IS NOT NULL
+      AND purged_at IS NULL)
+    OR
+    (review_state = 'rejected'
+      AND reviewer_kind IS NOT NULL
+      AND reviewer_id IS NOT NULL
+      AND review_reason IS NOT NULL
+      AND reviewed_at IS NOT NULL
+      AND purged_at IS NULL)
+    OR
+    (review_state = 'purged'
+      AND purged_at IS NOT NULL
+      AND (
+        (reviewer_kind IS NULL AND reviewer_id IS NULL AND review_reason IS NULL AND reviewed_at IS NULL)
+        OR (reviewer_kind IS NOT NULL AND reviewer_id IS NOT NULL AND reviewed_at IS NOT NULL)
+      ))
+  ),
+  CHECK (reviewed_at IS NULL OR reviewed_at >= created_at),
+  CHECK (purged_at IS NULL OR purged_at >= created_at),
+  CHECK (purged_at IS NULL OR reviewed_at IS NULL OR purged_at >= reviewed_at),
+  FOREIGN KEY (target_store_id) REFERENCES memory_stores(store_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_resource_id) REFERENCES memory_resources(resource_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_revision_id) REFERENCES memory_resource_revisions(revision_id) ON DELETE RESTRICT,
+  UNIQUE (agent_id, source_message_handle_hash)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_postbox_items_target_review
+  ON memory_postbox_items(agent_id, target_store_id, review_state, expires_at, postbox_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_postbox_items_source
+  ON memory_postbox_items(agent_id, source_conversation_id, created_at, postbox_item_id);
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_initial_review_copy
+BEFORE INSERT ON memory_postbox_items
+WHEN new.content <> new.review_content OR new.content_hash <> new.review_content_hash
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox review copy must start from the immutable source content');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_initial_pending
+BEFORE INSERT ON memory_postbox_items
+WHEN new.review_state <> 'pending'
+  OR new.target_resource_id IS NOT NULL
+  OR new.target_revision_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox items must begin pending without a promoted target');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_target_matches_quarantine
+BEFORE INSERT ON memory_postbox_items
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_stores
+    WHERE store_id = new.target_store_id
+      AND agent_id = new.target_agent_id
+      AND audience_kind = new.target_kind
+      AND audience_id = new.target_audience_id
+  ) THEN RAISE(ABORT, 'memory postbox target must be a same-agent named user store') END;
+  SELECT CASE WHEN new.target_resource_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM memory_resources
+    WHERE resource_id = new.target_resource_id
+      AND agent_id = new.target_agent_id
+      AND store_id = new.target_store_id
+  ) THEN RAISE(ABORT, 'memory postbox target resource must belong to its target store') END;
+  SELECT CASE WHEN new.target_revision_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions
+    WHERE revision_id = new.target_revision_id
+      AND resource_id = new.target_resource_id
+  ) THEN RAISE(ABORT, 'memory postbox target revision must belong to its target resource') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_immutable_identity
+BEFORE UPDATE OF postbox_item_id, agent_id, target_agent_id, target_store_id, target_kind,
+  target_audience_id, target_user_id, target_user_evidence_revision, source_conversation_id,
+  source_message_handle_hash, source_event_id, source_actor_kind, source_actor_id,
+  source_evidence_revision, provenance_label, expires_at, created_at
+ON memory_postbox_items
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox item identity is immutable');
+END;
+
+-- Purge is the sole content rewrite. It replaces both stored bodies with one
+-- canonical redaction while retaining review/provenance metadata for audit.
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_content_redaction_only
+BEFORE UPDATE OF content, content_hash, review_content, review_content_hash ON memory_postbox_items
+WHEN NOT (
+  (
+    old.review_state = 'pending'
+    AND new.review_state IN ('pending', 'approved')
+    AND new.content = old.content
+    AND new.content_hash = old.content_hash
+  )
+  OR (
+    old.review_state IN ('pending', 'approved', 'rejected')
+    AND new.review_state = 'purged'
+    AND new.content = '[purged]'
+    AND new.content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+    AND new.review_content = '[purged]'
+    AND new.review_content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox content can only be redacted during purge');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_target_attachment_transition
+BEFORE UPDATE OF target_resource_id, target_revision_id ON memory_postbox_items
+WHEN NOT (
+  old.review_state = 'pending'
+  AND new.review_state = 'approved'
+  AND old.target_resource_id IS NULL
+  AND old.target_revision_id IS NULL
+  AND new.target_resource_id IS NOT NULL
+  AND new.target_revision_id IS NOT NULL
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox target can only attach during pending approval');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_target_attachment_matches_quarantine
+BEFORE UPDATE OF target_resource_id, target_revision_id ON memory_postbox_items
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resources
+    WHERE resource_id = new.target_resource_id
+      AND agent_id = new.target_agent_id
+      AND store_id = new.target_store_id
+  ) THEN RAISE(ABORT, 'memory postbox target resource must belong to its target store') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM memory_resource_revisions
+    WHERE revision_id = new.target_revision_id
+      AND resource_id = new.target_resource_id
+  ) THEN RAISE(ABORT, 'memory postbox target revision must belong to its target resource') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_review_copy_pending_only
+BEFORE UPDATE OF review_content, review_content_hash ON memory_postbox_items
+WHEN old.review_state <> 'pending'
+  AND NOT (
+    old.review_state IN ('approved', 'rejected')
+    AND new.review_state = 'purged'
+    AND new.content = '[purged]'
+    AND new.content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+    AND new.review_content = '[purged]'
+    AND new.review_content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox review copy can only change while pending');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_review_transition
+BEFORE UPDATE OF review_state ON memory_postbox_items
+WHEN NOT (
+  (old.review_state = 'pending' AND new.review_state IN ('pending', 'rejected', 'purged'))
+  OR (
+    old.review_state = 'pending'
+    AND new.review_state = 'approved'
+    AND old.target_resource_id IS NULL
+    AND old.target_revision_id IS NULL
+    AND new.target_resource_id IS NOT NULL
+    AND new.target_revision_id IS NOT NULL
+  )
+  OR (old.review_state = 'approved' AND new.review_state IN ('approved', 'purged'))
+  OR (old.review_state = 'rejected' AND new.review_state IN ('rejected', 'purged'))
+  OR (old.review_state = 'purged' AND new.review_state = 'purged')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox review state cannot be reopened');
+END;
+
+-- This state-transition guard also covers updates that omit content columns.
+-- A row can enter purged only after both retained bodies are canonical redactions.
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_purge_requires_redaction
+BEFORE UPDATE OF review_state ON memory_postbox_items
+WHEN old.review_state <> 'purged'
+  AND new.review_state = 'purged'
+  AND NOT (
+    new.content = '[purged]'
+    AND new.content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+    AND new.review_content = '[purged]'
+    AND new.review_content_hash = 'eccd0ed57eaab896fae1c5934381ca8d1a9ec62a1d61695e3950e8b1436bb1ca'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox purge requires canonical content redaction');
+END;
+
+-- New names layer over the prior terminal trigger in existing development DBs.
+-- Purging may redact content and add its timestamp, never rewrite its reviewer.
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_reviewer_metadata_immutable
+BEFORE UPDATE OF reviewer_kind, reviewer_id, review_reason, reviewed_at ON memory_postbox_items
+WHEN old.review_state <> 'pending'
+  AND (
+    new.reviewer_kind IS NOT old.reviewer_kind
+    OR new.reviewer_id IS NOT old.reviewer_id
+    OR new.review_reason IS NOT old.review_reason
+    OR new.reviewed_at IS NOT old.reviewed_at
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox review metadata is immutable after review');
+END;
+
+-- A purge preserves an existing review; it cannot manufacture one from a
+-- pending item. A distinct purger audit field would need its own contract.
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_reviewer_metadata_transition
+BEFORE UPDATE OF reviewer_kind, reviewer_id, review_reason, reviewed_at ON memory_postbox_items
+WHEN (
+  new.reviewer_kind IS NOT old.reviewer_kind
+  OR new.reviewer_id IS NOT old.reviewer_id
+  OR new.review_reason IS NOT old.review_reason
+  OR new.reviewed_at IS NOT old.reviewed_at
+)
+  AND NOT (
+    old.review_state = 'pending'
+    AND new.review_state IN ('approved', 'rejected')
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox review metadata can only be set by approval or rejection');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_purged_at_transition
+BEFORE UPDATE OF purged_at ON memory_postbox_items
+WHEN old.purged_at IS NOT new.purged_at
+  AND NOT (
+    old.review_state IN ('pending', 'approved', 'rejected')
+    AND new.review_state = 'purged'
+    AND old.purged_at IS NULL
+    AND new.purged_at IS NOT NULL
+    AND (new.reviewed_at IS NULL OR new.purged_at >= new.reviewed_at)
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox purge timestamp can only be set on purge');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_items_no_delete
+BEFORE DELETE ON memory_postbox_items
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox items cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS memory_postbox_rate_limits (
+  agent_id TEXT NOT NULL CHECK (length(trim(agent_id)) > 0),
+  source_conversation_id TEXT NOT NULL CHECK (length(trim(source_conversation_id)) > 0),
+  target_store_id TEXT NOT NULL CHECK (length(trim(target_store_id)) > 0),
+  window_started_at INTEGER NOT NULL,
+  accepted_count INTEGER NOT NULL CHECK (accepted_count >= 0),
+  last_accepted_at INTEGER NOT NULL,
+  -- Rejected deposits retain aggregate audit evidence only, never their content.
+  dropped_count INTEGER NOT NULL DEFAULT 0 CHECK (dropped_count >= 0),
+  last_dropped_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, source_conversation_id, target_store_id),
+  CHECK (last_accepted_at >= window_started_at),
+  CHECK (last_dropped_at IS NULL OR (last_dropped_at >= window_started_at AND last_dropped_at <= updated_at)),
+  CHECK (
+    (dropped_count = 0 AND last_dropped_at IS NULL)
+    OR (dropped_count > 0 AND last_dropped_at IS NOT NULL)
+  ),
+  CHECK (updated_at >= window_started_at),
+  FOREIGN KEY (target_store_id) REFERENCES memory_stores(store_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_postbox_rate_limits_target
+  ON memory_postbox_rate_limits(agent_id, target_store_id, updated_at);
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_rate_limits_target_matches_agent
+BEFORE INSERT ON memory_postbox_rate_limits
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM memory_stores
+  WHERE store_id = new.target_store_id
+    AND agent_id = new.agent_id
+    AND audience_kind = 'user'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox rate limit target must be a same-agent user store');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_postbox_rate_limits_target_updates_match_agent
+BEFORE UPDATE OF agent_id, target_store_id ON memory_postbox_rate_limits
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM memory_stores
+  WHERE store_id = new.target_store_id
+    AND agent_id = new.agent_id
+    AND audience_kind = 'user'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'memory postbox rate limit target must be a same-agent user store');
+END;
+
 CREATE TABLE IF NOT EXISTS memory_migrations (
   migration_id TEXT NOT NULL PRIMARY KEY,
   source_kind TEXT NOT NULL,

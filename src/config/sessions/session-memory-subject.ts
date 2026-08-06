@@ -76,6 +76,14 @@ export function prepareGatewayProfileSessionMemorySubjectSeed(
     : undefined;
 }
 
+/** Resolves an authenticated Gateway profile to the canonical memory-principal ID. */
+export function resolveGatewayProfileMemoryPrincipalId(
+  profileId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): string | undefined {
+  return ensureGatewayProfileMemoryPrincipal(profileId, options)?.principalId;
+}
+
 export function prepareChannelBindingSessionMemorySubjectSeed(params: {
   channel: string;
   accountId: string;

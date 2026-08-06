@@ -11,7 +11,7 @@ import {
   createMemoryTestEngine as engine,
   addonStatus,
   addonSwitch,
-  createMemoryPage as createPage,
+  createMemoryPage,
   memoryRoute,
   memoryTabRoute,
   selectEngine,
@@ -24,6 +24,43 @@ vi.mock("../../lib/plugins/index.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/plugins/index.ts")>();
   return { ...actual, setPluginEnabled: vi.fn() };
 });
+
+type MemoryPageGatewayTestHost = HTMLElement & {
+  context: {
+    gateway: {
+      snapshot: {
+        client: { request: (method: string, payload?: unknown) => Promise<unknown> };
+        hello: { features: { methods?: string[] } };
+      };
+    };
+  };
+};
+
+function configureMemorySharingGateway(element: HTMLElement, methods: readonly string[]): void {
+  const snapshot = (element as MemoryPageGatewayTestHost).context.gateway.snapshot;
+  const request = snapshot.client.request;
+  snapshot.hello.features = { ...snapshot.hello.features, methods: [...methods] };
+  snapshot.client.request = (method, payload) => {
+    if (method === "memory.sharing.status") {
+      return Promise.resolve({ postboxMode: "off", projections: [], postboxItems: [] });
+    }
+    if (method === "memory.sharing.postbox.list") {
+      return Promise.resolve({ postboxItems: [] });
+    }
+    return request(method, payload);
+  };
+}
+
+function createPage(
+  params: Parameters<typeof createMemoryPage>[0] & { methods?: readonly string[] },
+) {
+  const { methods, ...pageParams } = params;
+  const page = createMemoryPage(pageParams);
+  if (methods) {
+    configureMemorySharingGateway(page.element, methods);
+  }
+  return page;
+}
 
 /** Which tab body is actually mounted, rather than what the tab strip claims. */
 function visibleTab(element: HTMLElement): "overview" | "memories" | "dreams" | "settings" | null {
@@ -304,6 +341,60 @@ describe("MemorySettingsPage catalog state", () => {
       expect(element.querySelector("a.memory-page__link")?.textContent).toContain("Open Plugins");
     } finally {
       element.remove();
+    }
+  });
+
+  it("shows reviewed sharing to Gateway writers after every sharing method is advertised", async () => {
+    const methods = [
+      "memory.sharing.status",
+      "memory.sharing.projection.preview",
+      "memory.sharing.projection.create",
+      "memory.sharing.projection.review",
+      "memory.sharing.projection.refresh",
+      "memory.sharing.projection.revoke",
+      "memory.sharing.projection.impact",
+      "memory.sharing.postbox.list",
+      "memory.sharing.postbox.inspect",
+      "memory.sharing.postbox.review",
+      "memory.sharing.postbox.purge",
+    ];
+    const { element } = createPage({
+      configObject: {},
+      scopes: ["operator.write"],
+      methods,
+    });
+    document.body.append(element);
+    try {
+      await waitForFast(() => expect(element.textContent).toContain("Sharing and postbox"));
+      expect(element.querySelector("openclaw-memory-sharing")).not.toBeNull();
+    } finally {
+      element.remove();
+    }
+
+    const { element: reader } = createPage({
+      configObject: {},
+      scopes: ["operator.read"],
+      methods,
+    });
+    document.body.append(reader);
+    try {
+      await reader.updateComplete;
+      expect(reader.querySelector("openclaw-memory-sharing")?.textContent).toBe("");
+    } finally {
+      reader.remove();
+    }
+
+    const { element: incompleteGateway } = createPage({
+      configObject: {},
+      scopes: ["operator.write"],
+      methods: methods.slice(1),
+    });
+    document.body.append(incompleteGateway);
+    try {
+      await incompleteGateway.updateComplete;
+      expect(incompleteGateway.querySelector("openclaw-memory-sharing")?.textContent).toBe("");
+    } finally {
+      incompleteGateway.remove();
     }
   });
 

@@ -2428,6 +2428,116 @@ export const en: TranslationMap = {
       description: "Bring existing memory from other assistants into an agent workspace.",
       link: "Open Memory Import",
     },
+    sharing: {
+      title: "Sharing and postbox",
+      intro:
+        "Each reviewed copy has one same-agent target and a required expiry. Postbox content is shown only after an explicit owner or administrator inspection.",
+      targets: {
+        conversation: "Conversation",
+        role: "Verified role",
+        agentShared: "Agent-shared",
+      },
+      unknownTimestamp: "Unknown time",
+      requestFailed: "The Gateway could not complete that reviewed-memory request.",
+      completeRequiredFields:
+        "Choose a source revision, one target, a purpose, and a future expiry before previewing.",
+      refresh: "Refresh",
+      reviewState: {
+        pending: "Pending review",
+        approved: "Approved",
+        rejected: "Rejected",
+        revoked: "Revoked",
+        unknown: "Unknown state",
+      },
+      postboxMode: {
+        off: "Off",
+        reviewRequired: "Review required",
+        unknown: "Unknown",
+      },
+      status: {
+        title: "Review status",
+        description: "Authenticated local owners and Gateway administrators can use this surface.",
+        loading: "Loading reviewed-memory status",
+        unavailable: "Reviewed-memory status is unavailable",
+        unavailableDescription: "Reconnect or refresh to load redacted review metadata.",
+        agent: "Agent",
+        postboxMode: "Postbox mode",
+        projectionCount: "Projections",
+        postboxCount: "Postbox items",
+      },
+      projection: {
+        createTitle: "Prepare a projection",
+        createDescription:
+          "Preview the one reviewed copy before it is created in pending state. Approval is a separate action.",
+        refreshTitle: "Prepare a refreshed projection",
+        refreshDescription:
+          "A refresh creates a new pending copy. It never republishes the earlier source automatically.",
+        cancelRefresh: "New projection",
+        sourceRevision: "Source revision",
+        sourceRevisionDescription:
+          "Immutable revision ID only; its source content is not loaded here.",
+        targetKind: "Target kind",
+        targetKindDescription:
+          "Choose exactly one same-agent conversation, verified role, or agent-shared audience.",
+        targetId: "Target ID",
+        targetIdDescription:
+          "One named target. Wildcards and user-to-user targets are not available.",
+        agentSharedTargetDescription:
+          "The selected agent's shared audience is fixed to this agent.",
+        purpose: "Purpose",
+        expiry: "Expiry",
+        expiryDescription: "A future expiry is required for every reviewed copy.",
+        preview: "Preview for review",
+        refresh: "Refresh",
+        impact: "Prior exposure impact",
+        revoke: "Revoke",
+        confirmRevoke: "Confirm revoke",
+        priorExposures: "Prior redacted exposure receipts: {count}",
+        expires: "Expires",
+        untitled: "Reviewed projection",
+      },
+      preview: {
+        title: "Redacted preview",
+        description:
+          "Creating this preview only prepares a pending review item. It does not grant access until approval.",
+        target: "One target",
+        expiry: "Expiry",
+        redactedPreview: "Redacted preview",
+        createForReview: "Create pending review",
+        refreshForReview: "Refresh for review",
+      },
+      review: {
+        approve: "Approve",
+        reject: "Reject",
+        reason: "Rejection reason",
+        reasonRequired: "Enter a rejection reason before rejecting this item.",
+      },
+      projections: {
+        title: "Reviewed projections",
+        description: "Only redacted metadata and previews are shown.",
+        empty: "No reviewed projections for this agent.",
+      },
+      postbox: {
+        title: "Postbox review",
+        description:
+          "Postbox items stay quarantined until an owner explicitly approves, edits, rejects, or purges them.",
+        empty: "No postbox items need review.",
+        unknownProvenance: "Unknown provenance",
+        provenanceOnly: "Provenance label only; source conversation content is not shown.",
+        redactedPreview: "Redacted preview",
+        expires: "Expires",
+        inspect: "Inspect pending content",
+        hideInspection: "Hide content",
+        inspection: "Owner-only pending content",
+        inspectionDescription:
+          "This content was fetched only for this authenticated review. It remains quarantined until you approve or reject it.",
+        replacement: "Replacement text (optional)",
+        replacementDescription:
+          "Type replacement text without loading the deposited source content into this page.",
+        purge: "Purge",
+        confirmPurge: "Confirm purge",
+      },
+    },
     search: {
       intro: "Embedding and retrieval defaults shared by every agent that has no memory override.",
     },

@@ -171,6 +171,182 @@ describe("builtin authorized scoped memory runtime", () => {
     );
   });
 
+  it("maps a shown projection descendant to only its current approved root", async () => {
+    const sourceStore = createStore();
+    const source = createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: sourceStore,
+      logicalLocator: "projection-source.md",
+      content: "projection source record",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 2_000,
+    });
+    const targetStore = createBuiltinScopedMemoryStore({
+      agentId: "main",
+      scopeKind: "agent-shared",
+      audienceKind: "agent-shared",
+      audienceId: "main",
+      authorityKind: "agent",
+      authorityOwnerId: "main",
+      defaultCapabilities: ["retrieve", "read"],
+      actor: { kind: "human", id: "principal-owner" },
+      reason: "projection exposure target",
+      nowMs: 1_000,
+    });
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    const roots = [
+      {
+        label: "approved",
+        projectionId: "projection-approved",
+        reviewState: "approved" as const,
+        expiresAt: NOW_MS + 1_000,
+      },
+      {
+        label: "pending",
+        projectionId: "projection-pending",
+        reviewState: "pending" as const,
+        expiresAt: NOW_MS + 1_000,
+      },
+      {
+        label: "expired",
+        projectionId: "projection-expired",
+        reviewState: "approved" as const,
+        expiresAt: NOW_MS - 1,
+      },
+      {
+        label: "inactive",
+        projectionId: "projection-inactive",
+        reviewState: "approved" as const,
+        expiresAt: NOW_MS + 1_000,
+      },
+    ].map((projection) => {
+      const root = createBuiltinScopedMemoryResource({
+        agentId: "main",
+        store: targetStore,
+        logicalLocator: `projection-root-${projection.label}.md`,
+        content: `projection ${projection.label} root`,
+        lifecycleState: "pending",
+        actor: { kind: "human", id: "principal-owner" },
+        nowMs: 2_000,
+      });
+      const descendant = createBuiltinScopedMemoryResource({
+        agentId: "main",
+        store: targetStore,
+        logicalLocator: `projection-descendant-${projection.label}.md`,
+        content: `projection descendant exposure marker ${projection.label}`,
+        actor: { kind: "human", id: "principal-owner" },
+        nowMs: 3_000,
+      });
+      database
+        .prepare(
+          `INSERT INTO memory_lineage_edges
+             (child_revision_id, parent_revision_id, edge_kind, created_at)
+           VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+        )
+        .run(
+          root.revisionId,
+          source.revisionId,
+          "project",
+          2_000,
+          descendant.revisionId,
+          root.revisionId,
+          "derive",
+          3_000,
+        );
+      database
+        .prepare(
+          `INSERT INTO memory_projections (
+             projection_id, agent_id, source_revision_id, target_agent_id, target_store_id,
+             target_resource_id, target_revision_id, target_kind, target_audience_id,
+             purpose, preview, publisher_kind, publisher_id, review_state,
+             reviewer_kind, reviewer_id, review_reason, expires_at, revocation_behavior,
+             supersedes_projection_id, created_at, reviewed_at, revoked_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          projection.projectionId,
+          "main",
+          source.revisionId,
+          "main",
+          targetStore.storeId,
+          root.resourceId,
+          root.revisionId,
+          "agent-shared",
+          "main",
+          "projection exposure test",
+          "approved target copy",
+          "local-agent-owner",
+          "principal-owner",
+          "pending",
+          null,
+          null,
+          null,
+          projection.expiresAt,
+          "tombstone",
+          null,
+          2_000,
+          null,
+          null,
+        );
+      if (projection.reviewState === "approved") {
+        database
+          .prepare(
+            `UPDATE memory_resource_revisions
+                SET lifecycle_state = ?, activated_at = ?
+              WHERE revision_id = ?`,
+          )
+          .run("active", 2_000, root.revisionId);
+        database
+          .prepare(
+            `UPDATE memory_projections
+                SET review_state = ?, reviewer_kind = ?, reviewer_id = ?, reviewed_at = ?
+              WHERE projection_id = ?`,
+          )
+          .run("approved", "local-agent-owner", "principal-owner", 2_000, projection.projectionId);
+      }
+      if (projection.label === "inactive") {
+        database
+          .prepare(
+            `UPDATE memory_resource_revisions
+                SET lifecycle_state = ?, retired_at = ?
+              WHERE revision_id = ?`,
+          )
+          .run("tombstoned", NOW_MS, root.revisionId);
+      }
+      return { ...projection, root, descendant };
+    });
+
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const context = createContext({ operation: "read" });
+    const plan = await runtime.authorize(context);
+    const result = await runtime.searchAuthorized({
+      context,
+      plan,
+      query: "projection descendant exposure marker",
+      limit: 10,
+    });
+
+    expect(result.value.map((entry) => entry.resourceHandle.resourceRevision).toSorted()).toEqual(
+      roots.map((entry) => entry.descendant.revisionId).toSorted(),
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT projection_id, exposure_receipt_id, recorded_at
+             FROM memory_projection_exposures
+            WHERE exposure_receipt_id = ?
+            ORDER BY projection_id`,
+        )
+        .all(result.exposureReceipt.receiptId),
+    ).toEqual([
+      {
+        projection_id: "projection-approved",
+        exposure_receipt_id: result.exposureReceipt.receiptId,
+        recorded_at: NOW_MS,
+      },
+    ]);
+  });
+
   it("prepares stable transcript policy requirements before core commits an event", async () => {
     const store = createStore({ defaultCapabilities: ["retrieve", "read", "status"] });
     const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
@@ -585,6 +761,320 @@ describe("builtin authorized scoped memory runtime", () => {
     },
   );
 
+  it("does not let a cross-operation handle select an agent-shared mutation target", async () => {
+    createStore({ defaultCapabilities: ["retrieve", "read", "append", "delete"] });
+    const sharedStore = createBuiltinScopedMemoryStore({
+      agentId: "main",
+      scopeKind: "agent-shared",
+      audienceKind: "agent-shared",
+      audienceId: "main",
+      authorityKind: "agent",
+      authorityOwnerId: "main",
+      // The explicit mutation capabilities model a permissive target policy;
+      // ordinary runtime capture must still not select this shared audience.
+      defaultCapabilities: ["retrieve", "read", "append", "delete"],
+      actor: { kind: "human", id: "principal-owner" },
+      reason: "cross-operation target regression",
+      nowMs: 1_000,
+    });
+    const sharedResource = createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: sharedStore,
+      logicalLocator: "reviewed-shared-copy.md",
+      content: "reviewed shared cobalt copy",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 2_000,
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const readContext = createContext({ operation: "read" });
+    const readPlan = await runtime.authorize(readContext);
+    const search = await runtime.searchAuthorized({
+      context: readContext,
+      plan: readPlan,
+      query: "reviewed shared cobalt",
+      limit: 1,
+    });
+    const target = search.value[0]?.resourceHandle;
+    if (!target) {
+      throw new Error("expected a shared resource handle");
+    }
+
+    const appendContext = { ...readContext, operation: "append" as const };
+    const appendPlan = await runtime.authorize(appendContext);
+    await expect(
+      runtime.writeAuthorized({
+        context: appendContext,
+        plan: appendPlan,
+        mutation: {
+          version: 1,
+          kind: "append",
+          mutationId: "shared-target-append",
+          idempotencyKey: "shared-target-append-key",
+          content: "unreviewed mutation",
+          contentType: "markdown",
+          target,
+        },
+      }),
+    ).rejects.toThrow("mutation placement is unavailable");
+
+    const deleteContext = { ...readContext, operation: "delete" as const };
+    const deletePlan = await runtime.authorize(deleteContext);
+    await expect(
+      runtime.writeAuthorized({
+        context: deleteContext,
+        plan: deletePlan,
+        mutation: {
+          version: 1,
+          kind: "tombstone",
+          mutationId: "shared-target-tombstone",
+          idempotencyKey: "shared-target-tombstone-key",
+          target,
+        },
+      }),
+    ).rejects.toThrow("mutation placement is unavailable");
+
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(
+      database
+        .prepare("SELECT lifecycle_state FROM memory_resource_revisions WHERE revision_id = ?")
+        .get(sharedResource.revisionId),
+    ).toEqual({ lifecycle_state: "active" });
+  });
+
+  it("keeps a reviewed conversation projection immutable through ordinary mutations", async () => {
+    const sourceStore = createStore();
+    const source = createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: sourceStore,
+      logicalLocator: "projection-source.md",
+      content: "private projection source",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 2_000,
+    });
+    const conversationStore = createBuiltinScopedMemoryStore({
+      agentId: "main",
+      scopeKind: "conversation",
+      audienceKind: "conversation",
+      audienceId: "conversation-1",
+      authorityKind: "conversation",
+      authorityOwnerId: "conversation-1",
+      defaultCapabilities: ["retrieve", "read", "append", "replace", "delete"],
+      actor: { kind: "human", id: "principal-owner" },
+      reason: "conversation projection mutation regression",
+      nowMs: 1_000,
+    });
+    const projectionCopy = createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: conversationStore,
+      logicalLocator: "projections/reviewed-conversation-copy.md",
+      content: "reviewed conversation cobalt copy",
+      lifecycleState: "pending",
+      actor: { kind: "human", id: "principal-owner" },
+      expiresAt: NOW_MS + 1_000,
+      nowMs: 3_000,
+    });
+    createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store: conversationStore,
+      logicalLocator: "conversation-note.md",
+      content: "ordinary conversation mutable note",
+      actor: { kind: "human", id: "principal-owner" },
+      nowMs: 3_000,
+    });
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    database
+      .prepare(
+        `INSERT INTO memory_projections (
+          projection_id, agent_id, source_revision_id, target_agent_id, target_store_id,
+          target_resource_id, target_revision_id, target_kind, target_audience_id,
+          purpose, preview, publisher_kind, publisher_id, review_state, reviewer_kind,
+          reviewer_id, review_reason, expires_at, revocation_behavior, supersedes_projection_id,
+          created_at, reviewed_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "projection-conversation-immutable",
+        "main",
+        source.revisionId,
+        "main",
+        conversationStore.storeId,
+        projectionCopy.resourceId,
+        projectionCopy.revisionId,
+        "conversation",
+        "conversation-1",
+        "reviewed conversation projection",
+        "reviewed conversation copy",
+        "local-agent-owner",
+        "principal-owner",
+        "pending",
+        null,
+        null,
+        null,
+        NOW_MS + 1_000,
+        "tombstone",
+        null,
+        3_000,
+        null,
+        null,
+      );
+    database
+      .prepare(
+        `UPDATE memory_resource_revisions
+            SET lifecycle_state = ?, activated_at = ?
+          WHERE revision_id = ?`,
+      )
+      .run("active", 3_000, projectionCopy.revisionId);
+    database
+      .prepare(
+        `UPDATE memory_projections
+            SET review_state = ?, reviewer_kind = ?, reviewer_id = ?, reviewed_at = ?
+          WHERE projection_id = ?`,
+      )
+      .run(
+        "approved",
+        "local-agent-owner",
+        "principal-owner",
+        3_000,
+        "projection-conversation-immutable",
+      );
+
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
+    const readContext = createContext({
+      subject: {
+        version: 1,
+        kind: "conversation",
+        conversationPrincipalId: "conversation-1",
+        channel: "test",
+        accountId: "default",
+      },
+      actor: {
+        kind: "unattributed",
+        transportAuditRef: "conversation-projection-transport-audit",
+        evidenceRevision: "conversation-projection-evidence",
+      },
+      verifiedPrincipals: [],
+      conversation: {
+        conversationPrincipalId: "conversation-1",
+        channel: "test",
+        accountId: "default",
+        evidenceRevision: "conversation-projection-evidence",
+      },
+      delivery: {
+        sinkKind: "channel",
+        audiences: [{ kind: "conversation", id: "conversation-1" }],
+        egressCapabilityIds: ["reply.final"],
+        egressRegistryRevision: "conversation-projection-egress",
+        deliveryRevision: "conversation-projection-delivery",
+      },
+    });
+    const readPlan = await runtime.authorize(readContext);
+    const projectionSearch = await runtime.searchAuthorized({
+      context: readContext,
+      plan: readPlan,
+      query: "reviewed conversation cobalt",
+      limit: 1,
+    });
+    const projectionTarget = projectionSearch.value[0]?.resourceHandle;
+    if (!projectionTarget) {
+      throw new Error("expected a conversation projection handle");
+    }
+
+    const expectProjectionMutationRejected = async (params: {
+      operation: "append" | "replace" | "delete";
+      mutation: AuthorizedMemoryMutation;
+    }) => {
+      const context: MemoryAccessContext = { ...readContext, operation: params.operation };
+      const plan = await runtime.authorize(context);
+      await expect(
+        runtime.writeAuthorized({ context, plan, mutation: params.mutation }),
+      ).rejects.toThrow("mutation placement is unavailable");
+    };
+
+    await expectProjectionMutationRejected({
+      operation: "append",
+      mutation: {
+        version: 1,
+        kind: "append",
+        mutationId: "projection-append",
+        idempotencyKey: "projection-append-key",
+        content: "unreviewed append",
+        contentType: "markdown",
+        target: projectionTarget,
+      },
+    });
+    await expectProjectionMutationRejected({
+      operation: "replace",
+      mutation: {
+        version: 1,
+        kind: "replace",
+        mutationId: "projection-replace",
+        idempotencyKey: "projection-replace-key",
+        content: "unreviewed replacement",
+        contentType: "markdown",
+        target: projectionTarget,
+      },
+    });
+    await expectProjectionMutationRejected({
+      operation: "delete",
+      mutation: {
+        version: 1,
+        kind: "delete",
+        mutationId: "projection-delete",
+        idempotencyKey: "projection-delete-key",
+        target: projectionTarget,
+      },
+    });
+    await expectProjectionMutationRejected({
+      operation: "delete",
+      mutation: {
+        version: 1,
+        kind: "tombstone",
+        mutationId: "projection-tombstone",
+        idempotencyKey: "projection-tombstone-key",
+        target: projectionTarget,
+      },
+    });
+
+    const ordinarySearch = await runtime.searchAuthorized({
+      context: readContext,
+      plan: readPlan,
+      query: "ordinary conversation mutable",
+      limit: 1,
+    });
+    const ordinaryTarget = ordinarySearch.value[0]?.resourceHandle;
+    if (!ordinaryTarget) {
+      throw new Error("expected an ordinary conversation handle");
+    }
+    const appendContext: MemoryAccessContext = { ...readContext, operation: "append" };
+    const appendPlan = await runtime.authorize(appendContext);
+    await expect(
+      runtime.writeAuthorized({
+        context: appendContext,
+        plan: appendPlan,
+        mutation: {
+          version: 1,
+          kind: "append",
+          mutationId: "ordinary-conversation-append",
+          idempotencyKey: "ordinary-conversation-append-key",
+          content: "ordinary append",
+          contentType: "markdown",
+          target: ordinaryTarget,
+        },
+      }),
+    ).resolves.toMatchObject({ status: "committed" });
+
+    expect(
+      database
+        .prepare("SELECT lifecycle_state FROM memory_resource_revisions WHERE revision_id = ?")
+        .get(projectionCopy.revisionId),
+    ).toEqual({ lifecycle_state: "active" });
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM memory_write_intents WHERE resource_id = ?")
+        .get(projectionCopy.resourceId),
+    ).toEqual({ count: 0 });
+  });
+
   it("retries a failed audit delivery once and records the event idempotently", async () => {
     createStore({ defaultCapabilities: ["retrieve", "read", "append"] });
     const runtime = createBuiltinScopedMemoryRuntime({ now: () => NOW_MS });
@@ -819,6 +1309,69 @@ describe("builtin authorized scoped memory runtime", () => {
     await expect(
       runtime.readAuthorized({ context: readContext, plan: readPlan, handle: derivedHandle }),
     ).rejects.toThrow("revision is unavailable");
+  });
+
+  it("carries a finite source expiry into derived copies", async () => {
+    let nowMs = NOW_MS;
+    const store = createStore({ defaultCapabilities: ["retrieve", "read", "derive"] });
+    createBuiltinScopedMemoryResource({
+      agentId: "main",
+      store,
+      logicalLocator: "expiring-source.md",
+      content: "temporary cobalt source",
+      actor: { kind: "human", id: "principal-owner" },
+      expiresAt: NOW_MS + 100,
+      nowMs: 2_000,
+    });
+    const runtime = createBuiltinScopedMemoryRuntime({ now: () => nowMs });
+    const readContext = createContext({ operation: "read" });
+    const readPlan = await runtime.authorize(readContext);
+    const sourceSearch = await runtime.searchAuthorized({
+      context: readContext,
+      plan: readPlan,
+      query: "temporary cobalt",
+      limit: 1,
+    });
+    const sourceHandle = sourceSearch.value[0]?.resourceHandle;
+    if (!sourceHandle) {
+      throw new Error("expected expiring source handle");
+    }
+    const deriveContext = createContext({ operation: "derive" });
+    const derivePlan = await runtime.authorize(deriveContext);
+    const derived = await runtime.writeAuthorized({
+      context: deriveContext,
+      plan: derivePlan,
+      mutation: {
+        version: 1,
+        kind: "derive",
+        mutationId: "mutation-expiring-derived",
+        idempotencyKey: "expiring-derived-key",
+        content: "temporary cobalt derivative",
+        contentType: "markdown",
+        sourceHandles: [sourceHandle],
+        sourcePolicySetId: sourceSearch.exposureReceipt.sourcePolicySetId,
+      },
+    });
+    const derivedHandle = derived.resourceHandle;
+    if (!derivedHandle) {
+      throw new Error("expected derived handle");
+    }
+    const database = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    expect(
+      database
+        .prepare("SELECT expires_at FROM memory_resource_revisions WHERE revision_id = ?")
+        .get(derivedHandle.resourceRevision),
+    ).toEqual({ expires_at: NOW_MS + 100 });
+
+    nowMs = NOW_MS + 100;
+    const expiredPlan = await runtime.authorize(readContext);
+    const expiredSearch = await runtime.searchAuthorized({
+      context: readContext,
+      plan: expiredPlan,
+      query: "temporary cobalt derivative",
+      limit: 1,
+    });
+    expect(expiredSearch.value).toEqual([]);
   });
 
   it("authorizes import, export, sync, and status without caller-selected stores", async () => {

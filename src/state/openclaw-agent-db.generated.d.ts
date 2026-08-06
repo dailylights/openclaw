@@ -341,6 +341,83 @@ export interface MemoryPolicySets {
   policy_set_id: string;
 }
 
+export interface MemoryPostboxItems {
+  agent_id: string;
+  content: string;
+  content_hash: string;
+  created_at: number;
+  expires_at: number;
+  postbox_item_id: string;
+  provenance_label: string;
+  purged_at: number | null;
+  review_content: string;
+  review_content_hash: string;
+  review_reason: string | null;
+  review_state: string;
+  reviewed_at: number | null;
+  reviewer_id: string | null;
+  reviewer_kind: string | null;
+  source_actor_id: string;
+  source_actor_kind: string;
+  source_conversation_id: string;
+  source_event_id: string | null;
+  source_evidence_revision: string;
+  source_message_handle_hash: string;
+  target_agent_id: string;
+  target_audience_id: string;
+  target_kind: string;
+  target_resource_id: string | null;
+  target_revision_id: string | null;
+  target_store_id: string;
+  target_user_evidence_revision: string;
+  target_user_id: string;
+  updated_at: number;
+}
+
+export interface MemoryPostboxRateLimits {
+  accepted_count: number;
+  agent_id: string;
+  dropped_count: Generated<number>;
+  last_accepted_at: number;
+  last_dropped_at: number | null;
+  source_conversation_id: string;
+  target_store_id: string;
+  updated_at: number;
+  window_started_at: number;
+}
+
+export interface MemoryProjectionExposures {
+  exposure_receipt_id: string;
+  projection_id: string;
+  recorded_at: number;
+}
+
+export interface MemoryProjections {
+  agent_id: string;
+  created_at: number;
+  expires_at: number;
+  preview: string;
+  projection_id: string;
+  publisher_id: string;
+  publisher_kind: string;
+  purpose: string;
+  review_reason: string | null;
+  review_state: string;
+  reviewed_at: number | null;
+  reviewer_id: string | null;
+  reviewer_kind: string | null;
+  revocation_behavior: string;
+  revoked_at: number | null;
+  source_revision_id: string;
+  supersedes_projection_id: string | null;
+  target_agent_id: string;
+  target_audience_id: string;
+  target_kind: string;
+  target_resource_id: string;
+  target_revision_id: string;
+  target_store_id: string;
+}
+
 export interface MemoryResourceRevisions {
   activated_at: number | null;
   actor_id: string | null;
@@ -463,6 +540,15 @@ export interface MemoryScopedChunksFtsIdx {
   pgno: string | null;
   segid: string;
   term: string;
+}
+
+export interface MemorySharingSettings {
+  agent_id: string;
+  created_at: number;
+  postbox_mode: Generated<string>;
+  rate_limit_max_items: Generated<number>;
+  rate_limit_window_ms: Generated<number>;
+  updated_at: number;
 }
 
 export interface MemoryStorageRoots {
@@ -887,6 +973,10 @@ export interface DB {
   memory_policy_set_metadata: MemoryPolicySetMetadata;
   memory_policy_set_requirements: MemoryPolicySetRequirements;
   memory_policy_sets: MemoryPolicySets;
+  memory_postbox_items: MemoryPostboxItems;
+  memory_postbox_rate_limits: MemoryPostboxRateLimits;
+  memory_projection_exposures: MemoryProjectionExposures;
+  memory_projections: MemoryProjections;
   memory_resource_revisions: MemoryResourceRevisions;
   memory_resource_subjects: MemoryResourceSubjects;
   memory_resources: MemoryResources;
@@ -900,6 +990,7 @@ export interface DB {
   memory_scoped_chunks_fts_data: MemoryScopedChunksFtsData;
   memory_scoped_chunks_fts_docsize: MemoryScopedChunksFtsDocsize;
   memory_scoped_chunks_fts_idx: MemoryScopedChunksFtsIdx;
+  memory_sharing_settings: MemorySharingSettings;
   memory_storage_roots: MemoryStorageRoots;
   memory_stores: MemoryStores;
   memory_write_intents: MemoryWriteIntents;

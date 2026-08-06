@@ -126,14 +126,19 @@ its members may use channel memory, agent-shared memory, and projections
 addressed to that channel. It cannot search, exact-read, or otherwise reach the
 member's private or role stores.
 
-**The postbox is a one-way deposit valve.** A group may file an observation
-from a verified source message into one participant's quarantine. The group
-receives only a generic outcome and cannot list, search, or read the deposited
+**The postbox is reserved for a one-way deposit valve.** The current public
+posture is off-only: no Gateway, CLI, or Control UI action enables deposits or
+accepts them. A future enabled postbox may accept an observation from a
+verified source message into one participant's quarantine; the source group
+would receive only a generic outcome and could never list, search, or read the
 item back.
 
-**Projections are explicit declassified copies.** A projection names one
-audience, source revision, purpose, publisher, and lifetime. It is never
-inferred by the model, and a later source edit does not silently republish it.
+**Projections are explicit declassified copies.** A projection names exactly
+one same-agent named conversation, role, or agent-shared audience,
+source revision, purpose, publisher, and mandatory future lifetime. Only the
+local agent owner or a Gateway admin may publish, and every creation or refresh
+is reviewed. It is never inferred by the model, and a later source edit does
+not silently republish it.
 
 ## Design inputs
 
@@ -668,15 +673,15 @@ until the product explicitly defines a different durable-memory contract.
 
 ### Scope kinds
 
-| Scope          | Purpose                                                                              | Read rule                                                       | Write rule                                                 |
-| -------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------- |
-| `user`         | Private profile and durable notes for one verified person                            | Only that user's isolated subject, plus trusted admin workflows | That user's authorized DM workflows                        |
-| `channel`      | Facts said or produced in one group conversation                                     | That channel subject while collaboration and membership permit  | Runs in that channel                                       |
-| `role`         | Team or department memory                                                            | Verified role principal in a private or service context         | Named role publishers or admins                            |
-| `agent-shared` | Reference material shared by scoped sessions of one agent                            | Every eligible subject in that agent cell                       | Explicit publisher only                                    |
-| `agent`        | Autonomous operational memory                                                        | That service agent and trusted admin workflows                  | That service agent                                         |
-| `projection`   | Deliberately declassified copy for one named channel, role, or agent-shared audience | The named target audience while the projection is live          | The projection publisher; no implicit source write-through |
-| `quarantine`   | Ambiguous migration data, pending postbox deposits, and invalid policy state         | Admin review, or owner review for their own postbox             | Migration and deposit paths only                           |
+| Scope          | Purpose                                                                                | Read rule                                                                                     | Write rule                                                           |
+| -------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `user`         | Private profile and durable notes for one verified person                              | Only that user's isolated subject, plus trusted admin workflows                               | That user's authorized DM workflows                                  |
+| `channel`      | Facts said or produced in one group conversation                                       | That channel subject while collaboration and membership permit                                | Runs in that channel                                                 |
+| `role`         | Team or department memory                                                              | Verified role principal in a private or service context                                       | Local agent owner or Gateway admin through reviewed publish          |
+| `agent-shared` | Reference material shared by scoped sessions of one agent                              | Every eligible subject in that agent cell                                                     | Local agent owner or Gateway admin through reviewed publish          |
+| `agent`        | Autonomous operational memory                                                          | That service agent and trusted admin workflows                                                | That service agent                                                   |
+| `projection`   | Reviewed copy for exactly one same-agent named channel, role, or agent-shared audience | The named target audience while the projection is live; role readers need verified membership | Local agent owner or Gateway admin; no implicit source write-through |
+| `quarantine`   | Ambiguous migration data, pending postbox deposits, and invalid policy state           | Admin review, or owner review for their own postbox                                           | Migration and deposit paths only                                     |
 
 Cross-agent, instance-wide shared or role memory is deferred. It needs a
 separate canonical owner, database, lifecycle, and multi-agent authorization
@@ -1156,12 +1161,16 @@ leaving an old summary readable.
 
 ### Postbox
 
-The postbox is a deposit-only path from a group or collaborative session to one
-participant's quarantine. It is not a mounted personal store.
+The postbox is designed as a deposit-only path from a group or collaborative
+session to one participant's quarantine. It is not a mounted personal store.
+The current public posture is off-only: enabling or disabling deposits, issuing
+source-message handles, accepting a deposit, bulk-purging by source channel,
+and sending first-deposit notifications are deferred. Existing owner/admin
+review actions can inspect, review, or purge a stored item, but do not make the
+deposit path operable.
 
-Within the broker boundary, a hostile channel can attempt to pollute that
-quarantine, but it cannot read the participant's private store or retrieve a
-deposited item back into the channel.
+When a public `review-required` mode is introduced, it must preserve these
+constraints:
 
 - A deposit names a server-issued source message handle, not a user ID. Core
   resolves that message to a currently verified sender principal and evidence;
@@ -1172,15 +1181,17 @@ deposited item back into the channel.
 - The item records the channel, source message, actor, trust origin, creation
   time, and expiry. It never enters `PROFILE.md`, bootstrap, trigger injection,
   or dreaming promotion automatically.
-- The owner sees a provenance label and may approve, edit, reject, bulk-purge
-  by source channel, or disable deposits.
+- List and status views expose only redacted metadata. The target owner or a
+  Gateway admin may explicitly inspect one pending item's body for review; the
+  source channel never gains a corresponding read or list capability.
+- The owner may approve, edit, reject, bulk-purge by source channel, or disable
+  deposits through an explicit control plane.
 - The first accepted deposit from a previously unseen source channel queues an
   owner notification. Rate limits are per source channel and target store,
   persisted in SQLite; over-cap deposits are dropped and audited.
 
-Initial rollout defaults postbox to `off`. A review-required mode may be
-enabled after Stage 3. A labeled-without-review mode remains a later product
-choice; it should not be the enterprise default.
+The first public mode remains `review-required`; labeled-without-review and
+automatic-use modes are not enabled.
 
 If labeled-without-review is added later, an unreviewed item must render as
 untrusted data with its provenance. It remains ineligible for `PROFILE.md`,
@@ -1192,20 +1203,30 @@ never presented as an instruction source.
 A projection is an explicit declassified copy, not a live read grant against a
 private store. It must name:
 
-- one target channel, role, or agent-shared audience;
+- exactly one same-agent named conversation, role, or agent-shared audience;
 - a purpose and human-readable preview;
 - the source resource revision and publisher;
-- either a required `expires_at` or an explicit, audited `no_expiry` decision;
+- a mandatory future `expires_at`; audited `no_expiry` is not allowed, and the
+  copy cannot outlive a finite source expiry;
 - revocation behavior.
 
 Membership can narrow access to that named audience but never create or widen
-it. For example, "all channels I might join" is not an acceptable implicit
-target. A new channel needs a new projection decision.
+it. A role target is an active same-agent role store; verified membership is
+enforced when its readers access the copy. User, wildcard, multi-target,
+cross-agent, and "all channels I might join" targets are not acceptable. A new
+channel needs a new projection decision.
 
 The copy lives in the target audience's projection store and has lineage back
-to the private source. Source edits do not silently republish; the owner
-reviews a new projection revision. Revocation tombstones future retrieval of
-the copy and queues impact analysis for sessions where it was already exposed.
+to the private source. Only the local agent owner or a Gateway admin may
+publish, subject to active source `project` authority and the target's explicit
+`publish` policy. The local owner is the canonical principal recorded on that
+agent's active control root; owning an unrelated private root does not grant
+agent-level control. Read authority alone is not enough. Source edits do not
+silently republish; every creation and refresh is reviewed, and a refresh
+creates a new projection revision. Review is a separate action, but not a
+four-eyes requirement: the same authorized publisher may approve its own
+pending projection. Revocation tombstones future retrieval of the copy and
+queues impact analysis for sessions where it was already exposed.
 
 Direct private-store access from user A to user B remains deferred. It needs a
 separate design for invitation, acceptance, delegation, admin override,
@@ -1441,7 +1462,7 @@ index metadata in the existing per-agent database:
 | `memory_policy_entries`                           | policy revision, audience, effect, capability, grantor, expiry                                                                                              | Denies, placement authority, publisher authority, and exceptional allows                     |
 | `memory_revision_policy_requirements`             | resource revision, stable policy ID, captured source revision, expected active revision/revocation epoch, own/inherited relation                            | Materialized policy intersection for derivations without an unbounded lineage walk           |
 | `memory_lineage_edges`                            | child revision, parent revision or transcript event, relation                                                                                               | Derivation and revocation graph                                                              |
-| `memory_projections`                              | projection revision, source revision, target audience, purpose, expiry mode/time, revoked time                                                              | Explicit sharing lifecycle                                                                   |
+| `memory_projections`                              | projection revision, source revision, one same-agent target audience, purpose, mandatory future expiry, publisher/reviewer, revoked time                    | Explicit sharing lifecycle                                                                   |
 | `memory_postbox_items`                            | revision, source channel and event, target user store, review state, expiry                                                                                 | Deposit quarantine and review                                                                |
 | `session_memory_subjects`                         | session key, subject revision, subject and canonical conversation reference, creation evidence, created time                                                | Write-once subject on the logical `session_nodes` node                                       |
 | `session_memory_subject_snapshots`                | session ID, session key, subject revision, session-identity revision                                                                                        | Per-window audit snapshot; detects reset/rebind races                                        |
@@ -1686,13 +1707,14 @@ explicit export for legacy operation. Never dual-write.
 
 **Deliverables**
 
-- Add agent-shared and role publisher workflows with preview and audit.
-- Add projections with one named audience, purpose, source revision, an
-  explicit expiry or audited `no_expiry` choice, refresh, and revocation impact
-  analysis.
-- Add postbox in `off` and review-required modes with source-message handles,
-  first-source owner notifications, rate limits, owner review, provenance
-  labels, and bulk purge.
+- Add local-agent-owner or Gateway-admin publisher workflows for agent-shared
+  and role stores, with preview, review, and audit.
+- Add projections with exactly one same-agent named conversation, role,
+  or agent-shared audience; purpose; source revision; mandatory future expiry;
+  reviewed creation and refresh; and revocation impact analysis.
+- Keep the public postbox off-only. A later explicit enablement may allow only
+  review-required mode, with source-message handles, first-source owner
+  notifications, rate limits, owner review, provenance labels, and bulk purge.
 - Add owner/admin UI and CLI for store inspection, projection review,
   postbox review, and safe deletion.
 
@@ -1702,9 +1724,10 @@ explicit export for legacy operation. Never dual-write.
   only the reviewed copy.
 - Revoking or expiring a projection removes it from all new reads and lists
   affected prior exposures.
-- A group can deposit but cannot list or read back a postbox item.
-- The first accepted deposit from a new source channel notifies the owner once;
-  over-cap deposits are dropped and audited.
+- Before public enablement, no group can deposit a postbox item. The future
+  deposit path must not let a group list or read an item back.
+- The future first accepted deposit from a new source channel must notify the
+  owner once; over-cap deposits must be dropped and audited.
 - Postbox content never auto-promotes or auto-injects.
 - No direct user-to-user private-store allow can be created through API, CLI,
   UI, plugin, or raw tool arguments.
@@ -1945,23 +1968,27 @@ The custom work is justified by the integration boundary, not by a need to
 invent another vector store or IAM language. Reuse current storage, session,
 identity, and sandbox seams wherever they already own the invariant.
 
-## Open decisions
+## Decisions and open questions
 
-These choices require owner agreement before their implementation stage:
+The Phase 3 sharing posture below is settled. The remaining items require
+owner agreement before their implementation stage:
 
 1. **Enablement surface:** one durable config key versus a CLI-managed policy
    state. Avoid a temporary matrix of public flags.
 2. **Local binding flow:** how a channel sender proves ownership of a Gateway
    profile, and how account merges and recovery are approved and audited.
-3. **Shared publishing:** which local roles may receive the explicit publisher
-   capability for agent-shared or role memory, and whether every update
-   requires review.
-4. **Projection experience:** item selection, preview, refresh, expiry, and
-   revocation residuals without encouraging broad "share everywhere" actions.
+3. **Shared publishing (Phase 3 decision):** only the authenticated local
+   agent owner or a Gateway admin may publish to agent-shared or role memory;
+   every projection creation and refresh requires review.
+4. **Projection experience (Phase 3 decision):** targets are exactly one
+   same-agent named conversation, role, or agent-shared audience, with
+   a mandatory future expiry and no audited `no_expiry` exception. Item
+   selection, preview, refresh, and revocation residuals remain reviewed.
 5. **Membership bound:** provider-specific freshness guarantees and behavior
    during an outage.
-6. **Postbox posture:** whether any non-enterprise deployment should support
-   labeled automatic use without explicit review.
+6. **Postbox posture (Phase 3 decision):** postbox defaults to `off`; when
+   enabled, only review-required mode is available. Labeled automatic use is
+   outside the initial rollout.
 7. **Backend scaling:** collection and mount fan-out at hundreds or thousands
    of stores, especially for QMD and remote memory plugins.
 8. **Artifact location and backup:** the exact controlled state path, ownership

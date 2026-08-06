@@ -1,15 +1,17 @@
 ---
-summary: "CLI reference for `openclaw memory` (status/index/search/promote/promote-explain/rem-harness/rem-backfill/session-backfill)"
+summary: "CLI reference for `openclaw memory` (status, search, promotion, sharing review, and backfill)"
 read_when:
   - You want to index or search semantic memory
   - You're debugging memory availability or indexing
   - You want to promote recalled short-term memory into `MEMORY.md`
+  - You need to review an explicit scoped-memory projection or postbox item
 title: "Memory"
 ---
 
 # `openclaw memory`
 
-Manage semantic memory indexing, search, and promotion into `MEMORY.md`.
+Manage semantic memory indexing, search, promotion into `MEMORY.md`, and
+reviewed scoped-memory sharing.
 Provided by the bundled `memory-core` plugin, available when
 `plugins.slots.memory` selects `memory-core` (the default). Other memory
 plugins expose their own CLI namespaces.
@@ -191,6 +193,75 @@ commands use the same grounded-only staging class and diary markers. Run
 grounded backfill artifacts from that workspace. Rollback also removes the
 tracked hashes added by session backfill and rewinds the affected transcript
 cursors, so the same candidates can be previewed and applied again.
+
+## `memory sharing`
+
+`memory sharing` is the Gateway client for reviewed scoped-memory sharing. Every
+command requires `--agent <id>` and an `operator.admin`-capable Gateway token.
+The Control UI can instead use an authenticated local owner profile where
+authorized. Status, list, and projection results are redacted JSON; they never
+return projection source content or a postbox body. Projection metadata does
+include its `sourceRevisionId` for lineage and review. `postbox inspect` is the
+sole body exception: it returns one pending body to that authorized owner or
+administrator for informed review.
+Projection preview, creation, and approval also recheck active source `project`
+authority and the target's explicit `publish` policy; a read grant alone never
+permits publishing.
+
+The projection workflow is deliberately narrow:
+
+1. Create a preview for one source revision, one target, a purpose, and a future expiry.
+2. Create the resulting pending projection.
+3. Approve or reject that pending item in a separate review action.
+
+Review is separate but not a four-eyes requirement: the same authorized
+publisher may approve its own pending projection.
+
+Only same-agent named conversations, active role stores, and the selected
+agent's agent-shared audience are valid targets. A role reader must still have
+verified membership when accessing its copy. User, wildcard, multi-target, and
+cross-agent targets are rejected. Every projection has a required future expiry;
+there is no `no_expiry` option. When the source has a finite expiry, the reviewed
+copy cannot outlive it.
+
+```bash
+openclaw memory sharing projection preview \
+  --agent main \
+  --source-revision <revision-id> \
+  --target-kind conversation \
+  --target-id <conversation-id> \
+  --purpose "Share the incident decision with this room" \
+  --expires-at 2026-09-01T00:00:00Z
+
+openclaw memory sharing projection create --agent main --preview-id <preview-id>
+openclaw memory sharing projection review \
+  --agent main --projection-id <projection-id> --decision approve
+```
+
+To refresh an approved projection, pass its ID to `projection preview` with
+`--supersedes-projection-id <projection-id>`, then use `projection refresh`
+with the returned preview ID and review the new pending copy. Refresh never
+republishes the old source automatically. `projection revoke` tombstones the
+copy; `projection impact` returns only a redacted prior-exposure count.
+
+```bash
+openclaw memory sharing projection review \
+  --agent main --projection-id <projection-id> \
+  --decision reject --reason "The target no longer needs this information"
+
+openclaw memory sharing postbox list --agent main
+openclaw memory sharing postbox inspect --agent main --postbox-item-id <item-id>
+openclaw memory sharing postbox review \
+  --agent main --postbox-item-id <item-id> \
+  --decision approve --edited-content "Owner-reviewed replacement text"
+openclaw memory sharing postbox purge --agent main --postbox-item-id <item-id>
+```
+
+`--reason` is mandatory for either kind of rejection. A postbox item stays
+quarantined until review or purge. Inspection is available only while the item
+is pending and does not give the source channel any read or list access. This
+CLI does not enable postbox deposits; postbox enablement remains a separate,
+deliberate Gateway policy decision.
 
 ## Dreaming
 

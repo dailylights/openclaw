@@ -249,6 +249,96 @@ type MemoryAuditOutboxRow = {
   delivered_at: number | null;
 };
 
+export type ScopedMemoryPublisherKind = "local-agent-owner" | "gateway-admin";
+export type ScopedMemoryProjectionTargetKind = "conversation" | "role" | "agent-shared";
+export type ScopedMemoryProjectionReviewState = "pending" | "approved" | "rejected" | "revoked";
+
+export type MemoryProjectionRow = {
+  projection_id: string;
+  agent_id: string;
+  source_revision_id: string;
+  target_agent_id: string;
+  target_store_id: string;
+  target_resource_id: string;
+  target_revision_id: string;
+  target_kind: ScopedMemoryProjectionTargetKind;
+  target_audience_id: string;
+  purpose: string;
+  preview: string;
+  publisher_kind: ScopedMemoryPublisherKind;
+  publisher_id: string;
+  review_state: ScopedMemoryProjectionReviewState;
+  reviewer_kind: ScopedMemoryPublisherKind | null;
+  reviewer_id: string | null;
+  review_reason: string | null;
+  expires_at: number;
+  revocation_behavior: "tombstone";
+  supersedes_projection_id: string | null;
+  created_at: number;
+  reviewed_at: number | null;
+  revoked_at: number | null;
+};
+
+type MemoryProjectionExposureRow = {
+  projection_id: string;
+  exposure_receipt_id: string;
+  recorded_at: number;
+};
+
+export type MemorySharingSettingsRow = {
+  agent_id: string;
+  postbox_mode: "off" | "review-required";
+  rate_limit_window_ms: number;
+  rate_limit_max_items: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type MemoryPostboxItemRow = {
+  postbox_item_id: string;
+  agent_id: string;
+  target_agent_id: string;
+  target_store_id: string;
+  target_kind: "user";
+  target_audience_id: string;
+  target_user_id: string;
+  target_user_evidence_revision: string;
+  target_resource_id: string | null;
+  target_revision_id: string | null;
+  source_conversation_id: string;
+  source_message_handle_hash: string;
+  source_event_id: string | null;
+  source_actor_kind: "human" | "agent" | "service";
+  source_actor_id: string;
+  source_evidence_revision: string;
+  provenance_label: string;
+  content: string;
+  content_hash: string;
+  review_content: string;
+  review_content_hash: string;
+  review_state: "pending" | "approved" | "rejected" | "purged";
+  reviewer_kind: ScopedMemoryPublisherKind | null;
+  reviewer_id: string | null;
+  review_reason: string | null;
+  expires_at: number;
+  created_at: number;
+  updated_at: number;
+  reviewed_at: number | null;
+  purged_at: number | null;
+};
+
+export type MemoryPostboxRateLimitRow = {
+  agent_id: string;
+  source_conversation_id: string;
+  target_store_id: string;
+  window_started_at: number;
+  accepted_count: number;
+  last_accepted_at: number;
+  dropped_count: number;
+  last_dropped_at: number | null;
+  updated_at: number;
+};
+
 export type ScopedMemoryDatabase = {
   memory_storage_roots: MemoryStorageRootRow;
   memory_stores: MemoryStoreRow;
@@ -266,6 +356,11 @@ export type ScopedMemoryDatabase = {
   memory_egress_receipts: MemoryEgressReceiptRow;
   memory_write_intents: MemoryWriteIntentRow;
   memory_audit_outbox: MemoryAuditOutboxRow;
+  memory_projections: MemoryProjectionRow;
+  memory_projection_exposures: MemoryProjectionExposureRow;
+  memory_sharing_settings: MemorySharingSettingsRow;
+  memory_postbox_items: MemoryPostboxItemRow;
+  memory_postbox_rate_limits: MemoryPostboxRateLimitRow;
 };
 
 export function withScopedMemoryDatabase<T>(

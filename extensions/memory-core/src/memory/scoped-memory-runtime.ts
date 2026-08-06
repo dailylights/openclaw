@@ -67,6 +67,7 @@ const MAX_SEARCH_RESULTS = 100;
 const MAX_CANDIDATES_SCANNED = 10_000;
 const SCOPED_CHUNK_MAX_LINES = 40;
 const SCOPED_CHUNK_MAX_CHARS = 4_000;
+const MAX_PROJECTION_EXPOSURE_LINEAGE_DEPTH = 256;
 const STAGED_ARTIFACT_PATTERN = /^mwst1_[A-Za-z0-9_-]{18,}\.tmp$/u;
 const CALLER_SELECTED_MUTATION_DESTINATION_FIELDS = [
   "artifactLocator",
@@ -147,6 +148,41 @@ function allocateOpaqueId(params: {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function collectProjectionExposureAncestorRevisionIds(params: {
+  database: DatabaseSync;
+  revisionIds: readonly string[];
+}): readonly string[] {
+  const ancestorRevisionIds = new Set(params.revisionIds);
+  const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+  let frontier = [...ancestorRevisionIds];
+  let depth = 0;
+  while (frontier.length > 0) {
+    // Exposure evidence must include every projection root that led to a shown
+    // descendant. Bound this walk so malformed lineage fails closed, not partial.
+    if (depth >= MAX_PROJECTION_EXPOSURE_LINEAGE_DEPTH) {
+      throw new Error("memory projection exposure lineage is too deep");
+    }
+    const parents = executeSqliteQuerySync(
+      params.database,
+      db
+        .selectFrom("memory_lineage_edges")
+        .select("parent_revision_id")
+        .where("child_revision_id", "in", frontier)
+        .orderBy("child_revision_id")
+        .orderBy("parent_revision_id"),
+    ).rows;
+    frontier = parents.flatMap((parent) => {
+      if (ancestorRevisionIds.has(parent.parent_revision_id)) {
+        return [];
+      }
+      ancestorRevisionIds.add(parent.parent_revision_id);
+      return [parent.parent_revision_id];
+    });
+    depth += 1;
+  }
+  return [...ancestorRevisionIds].toSorted(compareText);
 }
 
 type MemoryLineageEdgeKind = "revision" | "derive" | "project" | "publish";
@@ -570,6 +606,50 @@ export function createBuiltinScopedMemoryRuntime(
           recorded_at: params.nowMs,
         }),
       );
+      const ancestryRevisionIds = collectProjectionExposureAncestorRevisionIds({
+        database: params.database,
+        revisionIds: exposedResourceRevisions,
+      });
+      if (ancestryRevisionIds.length > 0) {
+        const projections = executeSqliteQuerySync(
+          params.database,
+          db
+            .selectFrom("memory_projections as projection")
+            .innerJoin(
+              "memory_resource_revisions as target_revision",
+              "target_revision.revision_id",
+              "projection.target_revision_id",
+            )
+            .innerJoin(
+              "memory_resources as target_resource",
+              "target_resource.resource_id",
+              "target_revision.resource_id",
+            )
+            .select("projection.projection_id")
+            .where("projection.target_revision_id", "in", ancestryRevisionIds)
+            .where("projection.agent_id", "=", params.context.agentId)
+            .where("projection.target_agent_id", "=", params.context.agentId)
+            .where("projection.review_state", "=", "approved")
+            .where("projection.expires_at", ">", params.nowMs)
+            .where("target_revision.lifecycle_state", "=", "active")
+            .where("target_resource.agent_id", "=", params.context.agentId)
+            .whereRef("target_resource.resource_id", "=", "projection.target_resource_id")
+            .whereRef("target_resource.store_id", "=", "projection.target_store_id")
+            .orderBy("projection.projection_id"),
+        ).rows;
+        if (projections.length > 0) {
+          executeSqliteQuerySync(
+            params.database,
+            db.insertInto("memory_projection_exposures").values(
+              projections.map((projection) => ({
+                projection_id: projection.projection_id,
+                exposure_receipt_id: exposureReceiptId,
+                recorded_at: params.nowMs,
+              })),
+            ),
+          );
+        }
+      }
       executeSqliteQuerySync(
         params.database,
         db.insertInto("memory_egress_receipts").values({
@@ -650,6 +730,39 @@ export function createBuiltinScopedMemoryRuntime(
       throw new Error("authorized memory mutation is unavailable");
     }
     return mount;
+  };
+
+  const assertSubjectDefaultMutationTarget = (params: {
+    mount: ScopedMemoryMountRecord;
+    target: ScopedMemoryRevisionAuthorization;
+  }): void => {
+    // A handle proves a revision is readable; it must not select a different
+    // write audience. Ordinary mutations stay in the session-subject store.
+    if (params.target.storeId !== params.mount.store.store_id) {
+      throw new Error("authorized memory mutation placement is unavailable");
+    }
+  };
+
+  const assertMutationTargetIsNotProjectionCopy = (params: {
+    database: DatabaseSync;
+    agentId: string;
+    resourceId: string;
+  }): void => {
+    const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+    const projection = executeSqliteQueryTakeFirstSync(
+      params.database,
+      db
+        .selectFrom("memory_projections")
+        .select("projection_id")
+        .where("agent_id", "=", params.agentId)
+        .where("target_resource_id", "=", params.resourceId)
+        .limit(1),
+    );
+    // A projection copy must remain bound to its review lifecycle. Revising or
+    // tombstoning its resource would create an unreviewed successor or evade it.
+    if (projection) {
+      throw new Error("authorized memory mutation placement is unavailable");
+    }
   };
 
   const readMutationStoreRoot = (params: {
@@ -1429,6 +1542,7 @@ export function createBuiltinScopedMemoryRuntime(
         }
 
         if (params.mutation.kind === "delete" || params.mutation.kind === "tombstone") {
+          const mount = selectDefaultMutationMount({ context: params.context, planRecord });
           const target = assertMutationHandle({
             database,
             context: params.context,
@@ -1436,6 +1550,12 @@ export function createBuiltinScopedMemoryRuntime(
             planRecord,
             handle: params.mutation.target,
             nowMs,
+          });
+          assertSubjectDefaultMutationTarget({ mount, target });
+          assertMutationTargetIsNotProjectionCopy({
+            database,
+            agentId,
+            resourceId: target.resourceId,
           });
           const intentId = allocateOpaqueId({
             kind: "intent",
@@ -1463,6 +1583,11 @@ export function createBuiltinScopedMemoryRuntime(
             if (!current || current.resourceId !== target.resourceId) {
               throw new Error("authorized memory revision is unavailable");
             }
+            assertMutationTargetIsNotProjectionCopy({
+              database,
+              agentId,
+              resourceId: current.resourceId,
+            });
             const db = getNodeSqliteKysely<ScopedMemoryDatabase>(database);
             tombstoneRevisionLineage({
               database,
@@ -1569,12 +1694,12 @@ export function createBuiltinScopedMemoryRuntime(
             handle: params.mutation.target,
             nowMs,
           });
-          const targetMount = planRecord.mounts.find(
-            (entry) => entry.store.store_id === target.storeId,
-          );
-          if (!targetMount) {
-            throw new Error("authorized memory mutation is unavailable");
-          }
+          assertSubjectDefaultMutationTarget({ mount, target });
+          assertMutationTargetIsNotProjectionCopy({
+            database,
+            agentId,
+            resourceId: target.resourceId,
+          });
           const existingContent = readVerifiedArtifact({
             pathname: resolveBuiltinScopedMemoryArtifactPath({
               databasePath,
@@ -1587,7 +1712,6 @@ export function createBuiltinScopedMemoryRuntime(
           if (existingContent === undefined) {
             throw new Error("authorized memory revision is unavailable");
           }
-          mount = targetMount;
           resourceId = target.resourceId as `${string}-${string}-${string}-${string}-${string}`;
           logicalLocator = target.logicalLocator;
           revisionNumber =
@@ -1700,6 +1824,9 @@ export function createBuiltinScopedMemoryRuntime(
           if (currentRoot.pathKey !== root.pathKey) {
             throw new Error("authorized memory storage root changed during write");
           }
+          if (params.mutation.kind === "append" || params.mutation.kind === "replace") {
+            assertMutationTargetIsNotProjectionCopy({ database, agentId, resourceId });
+          }
           const currentSourceSnapshots = sourceSnapshots.map((source) => {
             const current = readScopedMemoryRevisionAuthorization({
               database,
@@ -1745,6 +1872,18 @@ export function createBuiltinScopedMemoryRuntime(
           if (currentPolicyRequirements.length === 0) {
             throw new Error("authorized memory mutation source policy is unavailable");
           }
+          // A derived or revised copy must not outlive any readable source. In
+          // particular, this keeps expiry-only projections from becoming durable
+          // through an otherwise-authorized follow-on mutation.
+          const inheritedExpiry = currentSourceSnapshots.reduce<number | null>(
+            (earliest, source) =>
+              source.expiresAt === null
+                ? earliest
+                : earliest === null
+                  ? source.expiresAt
+                  : Math.min(earliest, source.expiresAt),
+            null,
+          );
           const db = getNodeSqliteKysely<ScopedMemoryDatabase>(database);
           if (revisionNumber === 1) {
             executeSqliteQuerySync(
@@ -1774,7 +1913,7 @@ export function createBuiltinScopedMemoryRuntime(
               lifecycle_state: "pending",
               actor_kind: actor.kind,
               actor_id: actor.id,
-              expires_at: null,
+              expires_at: inheritedExpiry,
               created_at: nowMs,
               activated_at: null,
               retired_at: null,

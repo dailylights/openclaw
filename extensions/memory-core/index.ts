@@ -30,6 +30,7 @@ import { registerShortTermPromotionDreaming } from "./src/dreaming.js";
 import { buildMemoryFlushPlan } from "./src/flush-plan.js";
 import type { MemoryCoreAcquireLocalService } from "./src/memory/embedding-local-service.js";
 import type { MemoryCoreRuntimeHost } from "./src/memory/runtime-host.js";
+import { registerScopedMemorySharingGatewayMethods } from "./src/memory/scoped-memory-sharing-gateway.js";
 import { buildPromptSection } from "./src/prompt-section.js";
 import { registerSessionBackfillGatewayMethods } from "./src/session-backfill-gateway.js";
 
@@ -349,6 +350,7 @@ export default definePluginEntry({
     configureMemoryCoreDreamingState(openKeyedStore);
     const memoryRuntime = createLazyMemoryRuntime(host);
     registerShortTermPromotionDreaming(api);
+    registerScopedMemorySharingGatewayMethods(api);
     registerSessionBackfillGatewayMethods(api);
     api.registerMemoryCapability({
       promptBuilder: buildPromptSection,
@@ -465,7 +467,7 @@ export default definePluginEntry({
         descriptors: [
           {
             name: "memory",
-            description: "Search, inspect, and reindex memory files",
+            description: "Search, inspect, reindex, and review scoped memory sharing",
             hasSubcommands: true,
           },
         ],

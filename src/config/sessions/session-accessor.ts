@@ -242,6 +242,7 @@ export {
   prepareExplicitSessionMemorySubjectSeed,
   prepareGatewayProfileSessionMemorySubjectSeed,
   prepareSessionMemorySubjectLineageSeed,
+  resolveGatewayProfileMemoryPrincipalId,
   resolveSessionMemorySubjectAuthority,
   InvalidSessionMemorySubjectSeedError,
   SessionMemorySubjectReboundError,

@@ -242,15 +242,20 @@ the phase that consumes them.
    - Decide whether Stage 5 uses a broker child process, a separate local
      service, or separate Gateway cells.
 
-9. **Shared publishing**
-   - Decide which local roles may receive publisher authority for role and
-     agent-shared stores.
-   - Decide whether every update requires review.
+9. **Shared publishing (resolved for Phase 3)**
+   - Only the authenticated local agent owner or a Gateway admin may receive
+     publisher authority for role and agent-shared stores.
+   - Every projection creation and refresh requires review; read authority is
+     never publisher authority.
 
-10. **Projection experience**
-    - Approve selection, preview, expiry, refresh, and revocation-residual
-      behavior before Phase 3.
-    - Do not allow broad "share everywhere" defaults.
+10. **Projection experience (resolved for Phase 3)**
+    - A projection targets exactly one same-agent named conversation, role, or
+      agent-shared audience. A role target is an active same-agent role store;
+      reader membership is verified at access time. Do not allow user, wildcard, multi-target,
+      cross-agent, or broad "share everywhere" targets.
+    - Every projection has a mandatory future expiry, bounded by a finite source
+      expiry. Audited `no_expiry` is not allowed. Selection, preview, refresh,
+      and revocation-residual behavior remain part of the reviewed workflow.
 
 ## 5. Phase dependency graph
 
@@ -1517,31 +1522,29 @@ Add deliberate sharing without introducing direct private-store reads.
 #### 14.1 Publisher operations
 
 Agent-shared and role stores require explicit publisher authority independent
-of read authority. Ordinary memory capture cannot write them.
+of read authority. Only the authenticated local agent owner or a Gateway admin
+may publish. Ordinary memory capture cannot write them.
 
 #### 14.2 Projections
 
 A projection is a reviewed copy with:
 
-- one target channel, role, or agent-shared audience;
+- exactly one same-agent named conversation, role, or agent-shared
+  audience;
 - purpose and human-readable preview;
 - source immutable revision;
 - publisher;
-- required expiry or explicit audited `no_expiry`;
+- a mandatory future expiry; audited `no_expiry` is not allowed;
 - revocation behavior;
 - lineage to the source.
 
-Source edits do not auto-republish. A refreshed projection is a new reviewed
-revision.
+Source edits do not auto-republish. Every creation and refresh requires review;
+a refreshed projection is a new reviewed revision.
 
 #### 14.3 Postbox
 
-Initial modes:
-
-- `off` by default;
-- `review-required` when explicitly enabled.
-
-Do not ship labeled automatic use in the first rollout.
+Postbox is `off` by default. When explicitly enabled, `review-required` is the
+only initial mode. Do not ship labeled or automatic use in the first rollout.
 
 Deposit requirements:
 
@@ -1589,12 +1592,14 @@ Phase 3 is complete only when all of the following are demonstrated:
 
 - [ ] Agent-shared and role writes require explicit publisher authority
       independent of read authority.
-- [ ] Every projection names one audience, purpose, source revision, publisher,
-      expiry/no-expiry decision, and revocation behavior.
+- [ ] Every projection names exactly one same-agent named conversation, role,
+      or agent-shared audience; purpose; source revision;
+      publisher; mandatory future expiry; and revocation behavior.
 - [ ] A projection exposes only its reviewed copy; the target cannot read or
       mutate the private source.
-- [ ] Projection refresh creates a new reviewed revision, while expiry or
-      revocation removes all new reads and enumerates affected prior exposures.
+- [ ] Every projection creation and refresh is reviewed. Refresh creates a new
+      reviewed revision, while expiry or revocation removes all new reads and
+      enumerates affected prior exposures.
 - [ ] Postbox remains `off` by default and supports review-required mode before
       any labeled automatic-use mode.
 - [ ] A source session can deposit only through a current server-issued source

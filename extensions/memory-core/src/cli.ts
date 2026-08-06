@@ -19,6 +19,7 @@ import type {
   MemorySearchCommandOptions,
 } from "./cli.types.js";
 import { configureMemoryCoreDreamingState } from "./dreaming-state.js";
+import { registerMemorySharingCli } from "./memory-sharing-cli.js";
 import type { MemoryCoreRuntimeHost } from "./memory/runtime-host.js";
 import type { MemorySessionBackfillOptions } from "./session-backfill.js";
 import {
@@ -132,7 +133,7 @@ export function registerMemoryCli(program: Command, hostOptions?: MemoryCoreRunt
   }
   const memory = program
     .command("memory")
-    .description("Search, inspect, and reindex memory files")
+    .description("Search, inspect, reindex, and review scoped memory sharing")
     .addHelpText(
       "after",
       () =>
@@ -178,6 +179,10 @@ export function registerMemoryCli(program: Command, hostOptions?: MemoryCoreRunt
             "Preview trusted candidates from retained session history.",
           ],
           ["openclaw memory status --json", "Output machine-readable JSON (good for scripts)."],
+          [
+            "openclaw memory sharing status --agent main",
+            "Inspect reviewed projections and quarantined postbox items.",
+          ],
         ])}\n\n${theme.muted("Docs:")} ${formatDocsLink("/cli/memory", "docs.openclaw.ai/cli/memory")}\n`,
     );
 
@@ -321,6 +326,8 @@ export function registerMemoryCli(program: Command, hostOptions?: MemoryCoreRunt
     .action(async (opts: MemorySessionBackfillOptions) => {
       await runMemorySessionBackfill(opts, hostOptions);
     });
+
+  registerMemorySharingCli(memory);
 
   memory.action(() => {
     memory.outputHelp();

@@ -35,6 +35,14 @@ type BuiltinScopedMemoryResource = Readonly<{
   sourcePolicySetId: string;
 }>;
 
+/** Immutable policy requirements inherited by a derived or projected revision. */
+export type ScopedMemoryRevisionPolicyRequirementInput = Readonly<{
+  stablePolicyId: string;
+  capturedRevisionId: string;
+  expectedActiveRevisionId: string;
+  expectedRevocationEpoch: number;
+}>;
+
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -76,6 +84,62 @@ export function resolveBuiltinScopedMemoryArtifactPath(params: {
     params.pathKey,
   );
   return resolveChildPath(storeDir, params.artifactLocator);
+}
+
+/**
+ * Remove builtin artifacts only after their catalog revisions are durably tombstoned.
+ * A missing file is a completed earlier cleanup; other failures leave the tombstone for retry.
+ */
+export function removeTombstonedBuiltinScopedMemoryArtifacts(params: {
+  database: DatabaseSync;
+  databasePath: string;
+  agentId: string;
+  revisionIds: readonly string[];
+}): void {
+  const agentId = normalizeAgentId(params.agentId);
+  const revisionIds = [...new Set(params.revisionIds)].toSorted();
+  if (revisionIds.length === 0) {
+    return;
+  }
+  const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
+  const rows = executeSqliteQuerySync(
+    params.database,
+    db
+      .selectFrom("memory_resource_revisions as revision")
+      .innerJoin("memory_resources as resource", "resource.resource_id", "revision.resource_id")
+      .innerJoin("memory_stores as store", "store.store_id", "resource.store_id")
+      .innerJoin("memory_storage_roots as root", "root.storage_root_id", "store.storage_root_id")
+      .select([
+        "revision.revision_id",
+        "revision.artifact_locator",
+        "revision.lifecycle_state",
+        "root.backend_kind",
+        "root.path_key",
+      ])
+      .where("revision.revision_id", "in", revisionIds)
+      .where("resource.agent_id", "=", agentId)
+      .orderBy("revision.revision_id"),
+  ).rows;
+  if (rows.length !== revisionIds.length) {
+    throw new Error("tombstoned scoped-memory artifact is unavailable");
+  }
+  for (const row of rows) {
+    if (row.lifecycle_state !== "tombstoned" || row.backend_kind !== "builtin" || !row.path_key) {
+      throw new Error("tombstoned scoped-memory artifact is unavailable");
+    }
+    const artifactPath = resolveBuiltinScopedMemoryArtifactPath({
+      databasePath: params.databasePath,
+      pathKey: row.path_key,
+      artifactLocator: row.artifact_locator,
+    });
+    try {
+      fs.unlinkSync(artifactPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
 }
 
 function writeOpaqueArtifact(params: { databasePath: string; pathKey: string; content: string }): {
@@ -201,6 +265,58 @@ function readActivePolicy(params: {
   }
 }
 
+function normalizeRevisionPolicyRequirements(params: {
+  store: BuiltinScopedMemoryStore;
+  inherited: readonly ScopedMemoryRevisionPolicyRequirementInput[];
+}): ScopedMemoryRevisionPolicyRequirementInput[] {
+  const requirements = new Map<string, ScopedMemoryRevisionPolicyRequirementInput>();
+  const add = (requirement: ScopedMemoryRevisionPolicyRequirementInput) => {
+    const normalized: ScopedMemoryRevisionPolicyRequirementInput = {
+      stablePolicyId: normalizeScopedMemoryRequiredText(
+        requirement.stablePolicyId,
+        "policy requirement stablePolicyId",
+      ),
+      capturedRevisionId: normalizeScopedMemoryRequiredText(
+        requirement.capturedRevisionId,
+        "policy requirement capturedRevisionId",
+      ),
+      expectedActiveRevisionId: normalizeScopedMemoryRequiredText(
+        requirement.expectedActiveRevisionId,
+        "policy requirement expectedActiveRevisionId",
+      ),
+      expectedRevocationEpoch: requirement.expectedRevocationEpoch,
+    };
+    if (
+      !Number.isSafeInteger(normalized.expectedRevocationEpoch) ||
+      normalized.expectedRevocationEpoch < 0
+    ) {
+      throw new Error("policy requirement expectedRevocationEpoch is invalid");
+    }
+    const existing = requirements.get(normalized.stablePolicyId);
+    if (
+      existing &&
+      (existing.capturedRevisionId !== normalized.capturedRevisionId ||
+        existing.expectedActiveRevisionId !== normalized.expectedActiveRevisionId ||
+        existing.expectedRevocationEpoch !== normalized.expectedRevocationEpoch)
+    ) {
+      throw new Error("scoped-memory resource policy requirements conflict");
+    }
+    requirements.set(normalized.stablePolicyId, normalized);
+  };
+  add({
+    stablePolicyId: params.store.policyId,
+    capturedRevisionId: params.store.policyRevisionId,
+    expectedActiveRevisionId: params.store.policyRevisionId,
+    expectedRevocationEpoch: params.store.policyRevocationEpoch,
+  });
+  for (const requirement of params.inherited) {
+    add(requirement);
+  }
+  return [...requirements.values()].toSorted((left, right) =>
+    left.stablePolicyId.localeCompare(right.stablePolicyId),
+  );
+}
+
 /** Seed one immutable Markdown revision for the authorized builtin backend. */
 export function createBuiltinScopedMemoryResource(params: {
   agentId: string;
@@ -211,6 +327,10 @@ export function createBuiltinScopedMemoryResource(params: {
   lifecycleState?: ScopedMemoryLifecycleState;
   actor: ScopedMemoryActor;
   expiresAt?: number;
+  /** Additional stable-policy requirements carried from an authorized source revision. */
+  inheritedPolicyRequirements?: readonly ScopedMemoryRevisionPolicyRequirementInput[];
+  /** Aggregate policy-set identifier for an authorized derived or projected copy. */
+  sourcePolicySetId?: string;
   subjects?: readonly Readonly<{
     kind: "person" | "project" | "conversation" | "topic";
     id: string;
@@ -230,6 +350,13 @@ export function createBuiltinScopedMemoryResource(params: {
   const revisionId = randomUUID();
   const contentHash = hashText(params.content);
   const chunks = chunkMarkdown(params.content);
+  const sourcePolicySetId = params.sourcePolicySetId
+    ? normalizeScopedMemoryRequiredText(params.sourcePolicySetId, "sourcePolicySetId")
+    : params.store.sourcePolicySetId;
+  const policyRequirements = normalizeRevisionPolicyRequirements({
+    store: params.store,
+    inherited: params.inheritedPolicyRequirements ?? [],
+  });
 
   return withScopedMemoryDatabase(agentId, (database, databasePath) => {
     const root = readActiveStoreRoot({ database, agentId, storeId: params.store.storeId });
@@ -279,7 +406,7 @@ export function createBuiltinScopedMemoryResource(params: {
             content_bytes: Buffer.byteLength(params.content),
             policy_revision_id: params.store.policyRevisionId,
             policy_revocation_epoch: params.store.policyRevocationEpoch,
-            source_policy_set_id: params.store.sourcePolicySetId,
+            source_policy_set_id: sourcePolicySetId,
             lifecycle_state: lifecycleState,
             actor_kind: params.actor.kind,
             actor_id: params.actor.id ?? null,
@@ -291,14 +418,16 @@ export function createBuiltinScopedMemoryResource(params: {
         );
         executeSqliteQuerySync(
           database,
-          db.insertInto("memory_revision_policy_requirements").values({
-            revision_id: revisionId,
-            stable_policy_id: params.store.policyId,
-            captured_revision_id: params.store.policyRevisionId,
-            expected_active_revision_id: params.store.policyRevisionId,
-            expected_revocation_epoch: params.store.policyRevocationEpoch,
-            created_at: nowMs,
-          }),
+          db.insertInto("memory_revision_policy_requirements").values(
+            policyRequirements.map((requirement) => ({
+              revision_id: revisionId,
+              stable_policy_id: requirement.stablePolicyId,
+              captured_revision_id: requirement.capturedRevisionId,
+              expected_active_revision_id: requirement.expectedActiveRevisionId,
+              expected_revocation_epoch: requirement.expectedRevocationEpoch,
+              created_at: nowMs,
+            })),
+          ),
         );
         const subjects = (params.subjects ?? []).map((subject) => ({
           revision_id: revisionId,
@@ -372,7 +501,7 @@ export function createBuiltinScopedMemoryResource(params: {
       resourceId,
       revisionId,
       policyRevisionId: params.store.policyRevisionId,
-      sourcePolicySetId: params.store.sourcePolicySetId,
+      sourcePolicySetId,
     });
   });
 }
