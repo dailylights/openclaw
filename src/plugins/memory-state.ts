@@ -2,6 +2,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isMemoryIsolationCutoverAgent } from "./memory-cutover.js";
+import { isMemoryInvocationEnforced } from "./memory-invocation-token.js";
 import type {
   MemoryCorpusSupplement,
   MemoryCorpusSupplementRegistration,
@@ -17,8 +19,6 @@ import type {
   MemoryPromptSupplementRegistration,
   PreparedMemoryPromptSection,
 } from "./registry-contribution-types.js";
-import { isMemoryIsolationCutoverAgent } from "./memory-cutover.js";
-import { isMemoryInvocationEnforced } from "./memory-invocation-token.js";
 import { requireActivePluginRegistry, resolveDirectPluginRegistrationOwner } from "./runtime.js";
 
 const log = createSubsystemLogger("plugins/memory-state");

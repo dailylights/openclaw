@@ -9,7 +9,6 @@ import type {
   MemoryAuthorizationCapabilities,
 } from "../memory-host-sdk/host/authorization.js";
 import type { MemorySearchManager, MemorySearchResult } from "../memory-host-sdk/host/types.js";
-import type { MemoryInvocationToken } from "./memory-invocation-token.js";
 import type {
   EmbeddingProvider,
   EmbeddingProviderAdapter,
@@ -18,6 +17,7 @@ import type {
   EmbeddingProviderIndexIdentity,
   EmbeddingProviderRuntime,
 } from "./embedding-provider-types.js";
+import type { MemoryInvocationToken } from "./memory-invocation-token.js";
 
 export type ContextEngineFactoryContext = {
   config?: OpenClawConfig;

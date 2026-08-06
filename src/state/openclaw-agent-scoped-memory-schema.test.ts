@@ -682,16 +682,7 @@ describe("scoped memory additive agent schema", () => {
                review_state = ?, purged_at = ?, updated_at = ?
            WHERE postbox_item_id = ?`,
         )
-        .run(
-          "[purged]",
-          purgedHash,
-          "[purged]",
-          purgedHash,
-          "purged",
-          19,
-          20,
-          "postbox-item-a",
-        ),
+        .run("[purged]", purgedHash, "[purged]", purgedHash, "purged", 19, 20, "postbox-item-a"),
     ).toThrow(/memory postbox purge timestamp can only be set on purge/u);
 
     database
@@ -701,16 +692,7 @@ describe("scoped memory additive agent schema", () => {
              review_state = ?, purged_at = ?, updated_at = ?
          WHERE postbox_item_id = ?`,
       )
-      .run(
-        "[purged]",
-        purgedHash,
-        "[purged]",
-        purgedHash,
-        "purged",
-        51,
-        51,
-        "postbox-item-a",
-      );
+      .run("[purged]", purgedHash, "[purged]", purgedHash, "purged", 51, 51, "postbox-item-a");
     expect(
       database
         .prepare(
@@ -770,16 +752,7 @@ describe("scoped memory additive agent schema", () => {
              review_state = ?, purged_at = ?, updated_at = ?
          WHERE postbox_item_id = ?`,
       )
-      .run(
-        "[purged]",
-        purgedHash,
-        "[purged]",
-        purgedHash,
-        "purged",
-        51,
-        51,
-        "pending-purge-item",
-      );
+      .run("[purged]", purgedHash, "[purged]", purgedHash, "purged", 51, 51, "pending-purge-item");
     expect(
       database
         .prepare(

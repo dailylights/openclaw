@@ -42,13 +42,13 @@ import {
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
 import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
-import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
   persistSessionMemorySubjectInTransaction,
   rehomeSessionMemorySubjectAliases,
   tryRehomeSessionMemorySubjectSnapshot,
   type TrustedSessionMemorySubjectSeed,
 } from "./session-memory-subject.js";
+import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
   collectSessionEntryLookupKeys,
   resolveDeliveryProvenCanonicalSessionKey,
