@@ -1229,6 +1229,13 @@ export type PreservedTranscriptMemoryPolicy = {
   policy: TranscriptEventMemoryPolicies;
 };
 
+/** Immutable source-row evidence for rebuilding a sequence-bound compaction companion. */
+export type PreservedTranscriptCompactionPolicy = Readonly<{
+  compactionId: string;
+  eventSeq: number;
+  sourceEventSeqs: readonly number[];
+}>;
+
 /** One archived transcript row's immutable, currently-evaluable policy evidence. */
 export type TranscriptMemoryArchivePolicySnapshot = Readonly<{
   eventSeq: number;
@@ -1237,6 +1244,8 @@ export type TranscriptMemoryArchivePolicySnapshot = Readonly<{
 
 /** Portable policy evidence for a transcript export, never reconstructed from event payloads. */
 export type TranscriptMemoryPolicyExportManifest = Readonly<{
+  /** Optional so earlier manifests remain safe inputs; absent bindings leave summaries pending. */
+  compactionBindings?: readonly PreservedTranscriptCompactionPolicy[];
   events: readonly TranscriptMemoryPolicyExportEvent[];
   schemaVersion: 1;
   sessionId: string;
@@ -1312,6 +1321,143 @@ export function captureAuthorizedTranscriptMemoryPoliciesInTransaction(params: {
   return policies;
 }
 
+/** Captures only compaction bindings that still authorize their source rows. */
+export function captureAuthorizedTranscriptCompactionPoliciesInTransaction(params: {
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+}): Map<number, PreservedTranscriptCompactionPolicy> | undefined {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return undefined;
+  }
+  const db = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db);
+  const policies = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .selectFrom("transcript_event_memory_policies")
+      .select("event_seq")
+      .where("session_id", "=", params.sessionId)
+      .orderBy("event_seq", "asc"),
+  ).rows;
+  const captured = new Map<number, PreservedTranscriptCompactionPolicy>();
+  for (const policy of policies) {
+    const compaction = readTranscriptCompactionIdentity(
+      params.database.db,
+      params.sessionId,
+      policy.event_seq,
+    );
+    if (
+      !compaction ||
+      !isStoredTranscriptEventAuthorized(params.database.db, params.sessionId, policy.event_seq)
+    ) {
+      continue;
+    }
+    const binding = executeSqliteQueryTakeFirstSync(
+      params.database.db,
+      db
+        .selectFrom("memory_compaction_policy_bindings")
+        .select(["authorization_status", "source_event_seqs_json"])
+        .where("session_id", "=", params.sessionId)
+        .where("compaction_id", "=", compaction.id),
+    );
+    const sourceEventSeqs = binding
+      ? parseCanonicalMemoryStringArray(binding.source_event_seqs_json)
+          ?.map((value) => Number(value))
+          .toSorted((left, right) => left - right)
+      : undefined;
+    if (
+      binding?.authorization_status !== "authorized" ||
+      !sourceEventSeqs ||
+      sourceEventSeqs.length === 0 ||
+      sourceEventSeqs.some(
+        (sourceEventSeq) =>
+          !Number.isSafeInteger(sourceEventSeq) ||
+          sourceEventSeq < 0 ||
+          sourceEventSeq >= policy.event_seq,
+      )
+    ) {
+      continue;
+    }
+    captured.set(policy.event_seq, {
+      compactionId: compaction.id,
+      eventSeq: policy.event_seq,
+      sourceEventSeqs,
+    });
+  }
+  return captured;
+}
+
+/** Removes non-FK compaction rows before a transcript owner is replaced or reclaimed. */
+export function clearTranscriptCompactionPoliciesInTransaction(params: {
+  compactionId?: string;
+  database: OpenClawAgentDatabase;
+  sessionId: string;
+}): void {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db)) {
+    return;
+  }
+  const compactionId = params.compactionId?.trim();
+  if (params.compactionId !== undefined && !compactionId) {
+    return;
+  }
+  const query = getNodeSqliteKysely<TranscriptMemoryPolicyDatabase>(params.database.db)
+    .deleteFrom("memory_compaction_policy_bindings")
+    .where("session_id", "=", params.sessionId);
+  executeSqliteQuerySync(
+    params.database.db,
+    compactionId ? query.where("compaction_id", "=", compactionId) : query,
+  );
+}
+
+/** Rebuilds only bindings whose captured output and every captured source mapped exactly. */
+export function rebuildTranscriptCompactionPoliciesInTransaction(params: {
+  captured: ReadonlyMap<number, PreservedTranscriptCompactionPolicy> | undefined;
+  database: OpenClawAgentDatabase;
+  eventSeqBySourceEventSeq: ReadonlyMap<number, number>;
+  sessionId: string;
+}): void {
+  if (!isTranscriptMemoryPolicyEnforcedInDatabase(params.database.db) || !params.captured) {
+    return;
+  }
+  for (const [, captured] of [...params.captured].toSorted(([left], [right]) => left - right)) {
+    const eventSeq = params.eventSeqBySourceEventSeq.get(captured.eventSeq);
+    if (eventSeq === undefined) {
+      continue;
+    }
+    const sourceEventSeqs: number[] = [];
+    for (const sourceEventSeq of captured.sourceEventSeqs) {
+      const mappedSourceEventSeq = params.eventSeqBySourceEventSeq.get(sourceEventSeq);
+      if (mappedSourceEventSeq === undefined) {
+        break;
+      }
+      sourceEventSeqs.push(mappedSourceEventSeq);
+    }
+    const compaction = readTranscriptCompactionIdentity(
+      params.database.db,
+      params.sessionId,
+      eventSeq,
+    );
+    if (
+      compaction?.id !== captured.compactionId ||
+      sourceEventSeqs.length !== captured.sourceEventSeqs.length ||
+      !recordTranscriptCompactionPolicyInTransaction({
+        compactionId: captured.compactionId,
+        database: params.database,
+        eventSeq,
+        sessionId: params.sessionId,
+        sourceEventSeqs,
+      })
+    ) {
+      // A replay that cannot prove the old sequence graph must never keep a
+      // summary visible merely because its payload still names old source ids.
+      invalidateTranscriptMemoryPolicyInTransaction({
+        database: params.database,
+        eventSeq,
+        sessionId: params.sessionId,
+      });
+    }
+  }
+}
+
 /** Captures the policy companions that may safely leave the live transcript as an archive. */
 export function captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction(params: {
   database: OpenClawAgentDatabase;
@@ -1358,7 +1504,13 @@ export function readTranscriptMemoryPolicyExportManifestFromDatabase(params: {
         ]
       : [];
   });
-  return { events, schemaVersion: 1, sessionId: params.sessionId };
+  const compactionBindings = captureAuthorizedTranscriptCompactionPoliciesInTransaction(params);
+  return {
+    ...(compactionBindings?.size ? { compactionBindings: [...compactionBindings.values()] } : {}),
+    events,
+    schemaVersion: 1,
+    sessionId: params.sessionId,
+  };
 }
 
 function archivePolicySnapshotsEqual(

@@ -28,6 +28,7 @@ import {
   withTranscriptWriteLock,
 } from "./session-accessor.js";
 import { materializeSqliteSessionStateDeletePlans } from "./session-accessor.sqlite-archive.js";
+import { copySqliteSessionOwnedStateForCanonicalRepair } from "./session-accessor.sqlite-canonical-repair.js";
 import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
 import {
   deleteMaterializedSqliteSessionStatePlans,
@@ -1113,7 +1114,7 @@ describe("transcript memory policy", () => {
     });
   });
 
-  it("preserves authorized companions through a same-database parent fork", async () => {
+  it("preserves authorized companions through a same-database parent fork retry", async () => {
     const scope = await createScope("same-database-fork");
     const childSessionId = `${scope.sessionId}-child`;
     const childSessionKey = `${scope.sessionKey}-child`;
@@ -1130,10 +1131,36 @@ describe("transcript memory policy", () => {
       eventId: "source-assistant",
       message: { role: "assistant", content: "forked source response" },
     });
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "source-user",
+        id: "forked-compaction",
+        parentId: "source-assistant",
+        sourceEntryIds: ["source-user", "source-assistant"],
+        summary: "forked summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
     const database = insertCutover(scope);
-    insertPolicyFixture({ scope, eventSeq: 0 });
-    insertPolicyFixture({ scope, eventSeq: 1 });
-    insertPolicyFixture({ scope, eventSeq: 2 });
+    for (const eventSeq of [0, 1, 2, 3]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "forked-compaction",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [1, 2],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
 
     const forked = await forkSessionFromParentTranscript({
       agentId: scope.agentId,
@@ -1155,7 +1182,11 @@ describe("transcript memory policy", () => {
         sessionKey: childSessionKey,
         storePath: database.path,
       }),
-    ).resolves.toMatchObject([{ id: "source-user" }, { id: "source-assistant" }]);
+    ).resolves.toMatchObject([
+      { id: "source-user" },
+      { id: "source-assistant" },
+      { id: "forked-compaction" },
+    ]);
     expect(
       database.db
         .prepare(
@@ -1183,10 +1214,64 @@ describe("transcript memory policy", () => {
         origin_event_seq: 2,
         transition_kind: "fork",
       },
+      {
+        event_seq: 3,
+        source_session_id: scope.sessionId,
+        source_event_seq: 3,
+        origin_session_id: scope.sessionId,
+        origin_event_seq: 3,
+        transition_kind: "fork",
+      },
     ]);
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(childSessionId, "forked-compaction"),
+    ).toEqual({ source_event_seqs_json: '["1","2"]' });
+    await expect(
+      loadTranscriptEvents({
+        agentId: scope.agentId,
+        env: scope.env,
+        sessionId: childSessionId,
+        sessionKey: childSessionKey,
+        storePath: database.path,
+      }).then((events) => events.map((event) => (event as { id?: string }).id)),
+    ).resolves.toContain("forked-compaction");
+
+    const replayed = await forkSessionFromParentTranscript({
+      agentId: scope.agentId,
+      parentEntry: { sessionId: scope.sessionId, updatedAt: 1 },
+      parentSessionKey: scope.sessionKey,
+      sessionKey: childSessionKey,
+      storePath: database.path,
+      targetSessionId: childSessionId,
+    });
+    expect(replayed.status).toBe("created");
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(childSessionId, "forked-compaction"),
+    ).toEqual({ source_event_seqs_json: '["1","2"]' });
+    await expect(
+      loadTranscriptEvents({
+        agentId: scope.agentId,
+        env: scope.env,
+        sessionId: childSessionId,
+        sessionKey: childSessionKey,
+        storePath: database.path,
+      }).then((events) => events.map((event) => (event as { id?: string }).id)),
+    ).resolves.toContain("forked-compaction");
   });
 
-  it("forks a cutover session from only visible source rows and retains their companions", async () => {
+  it("blocks message forks for cutover sessions", async () => {
     const scope = await createScope("message-cut-fork");
     await upsertSessionEntry(scope, {
       sessionFile: "sqlite",
@@ -1222,45 +1307,12 @@ describe("transcript memory policy", () => {
         sessionKey: scope.sessionKey,
         targetKey: `agent:${scope.agentId}:dashboard:message-cut-child`,
       });
-      if (fork.status !== "created") {
-        throw new Error("expected cutover message fork");
-      }
-
-      expect(
-        (
-          await loadTranscriptEvents({
-            agentId: scope.agentId,
-            env: scope.env,
-            sessionId: fork.entry.sessionId,
-            sessionKey: fork.key,
-          })
-        ).map((event) => (event as { id?: string }).id),
-      ).toEqual(["message-cut-user-1", "message-cut-assistant-1"]);
+      expect(fork.status).toBe("failed");
       expect(
         database.db
-          .prepare(
-            `SELECT p.authorization_status, l.source_event_seq, l.source_session_id, l.transition_kind
-               FROM transcript_event_memory_policies p
-               JOIN transcript_event_memory_policy_lineage l
-                 ON l.session_id = p.session_id AND l.event_seq = p.event_seq
-              WHERE p.session_id = ?
-              ORDER BY p.event_seq ASC`,
-          )
-          .all(fork.entry.sessionId),
-      ).toEqual([
-        {
-          authorization_status: "authorized",
-          source_event_seq: 1,
-          source_session_id: scope.sessionId,
-          transition_kind: "fork",
-        },
-        {
-          authorization_status: "authorized",
-          source_event_seq: 2,
-          source_session_id: scope.sessionId,
-          transition_kind: "fork",
-        },
-      ]);
+          .prepare("SELECT COUNT(*) AS count FROM session_windows WHERE session_key = ?")
+          .get(`agent:${scope.agentId}:dashboard:message-cut-child`),
+      ).toEqual({ count: 0 });
     } finally {
       if (originalStateDir === undefined) {
         delete process.env.OPENCLAW_STATE_DIR;
@@ -1367,6 +1419,88 @@ describe("transcript memory policy", () => {
     ]);
   });
 
+  it("cleans a compaction binding only after its authorized archive is durable", async () => {
+    const scope = await createScope("archive-compaction-cleanup");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "archive-compaction-source",
+      message: { role: "user", content: "archived compaction source" },
+    });
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: scope.sessionId,
+        id: "archive-compaction",
+        parentId: "archive-compaction-source",
+        sourceEntryIds: [scope.sessionId, "archive-compaction-source"],
+        summary: "archived compaction summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "archive-compaction",
+            database: writeDatabase,
+            eventSeq: 2,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const plan = planSqliteSessionStateDeleteIfUnreferenced({
+      archiveDirectory: path.join(scope.env.OPENCLAW_STATE_DIR ?? "", "archives"),
+      archiveTranscript: true,
+      database,
+      reason: "deleted",
+      referencedSessionIds: new Set(),
+      sessionId: scope.sessionId,
+    });
+    if (!plan) {
+      throw new Error("expected an archive deletion plan");
+    }
+    const [materialized] = await materializeSqliteSessionStateDeletePlans([plan]);
+    if (!materialized?.archivedTranscript) {
+      throw new Error("expected a materialized archive");
+    }
+    runOpenClawAgentWriteTransaction(
+      (transactionDb) => {
+        deleteMaterializedSqliteSessionStatePlans(
+          transactionDb,
+          [materialized],
+          undefined,
+          new Set([scope.sessionKey]),
+        );
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+
+    expect(readSessionArchiveContentSync(materialized.archivedTranscript.archivedPath)).toContain(
+      "archived compaction summary",
+    );
+    expect(
+      database.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "archive-compaction"),
+    ).toBeUndefined();
+  });
+
   it("fails closed when an archive policy changes after materialization", async () => {
     const scope = await createScope("archive-revocation");
     await upsertSessionEntry(scope, {
@@ -1414,7 +1548,7 @@ describe("transcript memory policy", () => {
         },
         { agentId: scope.agentId, env: scope.env },
       ),
-    ).toThrow("SQLite transcript changed before archive deletion");
+    ).toThrow("SQLite transcript policy changed before archive deletion");
     expect(
       database.db
         .prepare("SELECT COUNT(*) AS count FROM transcript_events WHERE session_id = ?")
@@ -1492,9 +1626,36 @@ describe("transcript memory policy", () => {
       eventId: "confirmed-message",
       message: { role: "user", content: "restore only with companion evidence" },
     });
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: scope.sessionId,
+        id: "confirmed-import-compaction",
+        parentId: "confirmed-message",
+        sourceEntryIds: [scope.sessionId, "confirmed-message"],
+        summary: "restored only through manifest bindings",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
     const database = insertCutover(scope);
-    insertPolicyFixture({ scope, eventSeq: 0 });
-    insertPolicyFixture({ scope, eventSeq: 1 });
+    for (const eventSeq of [0, 1, 2]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "confirmed-import-compaction",
+            database: writeDatabase,
+            eventSeq: 2,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
     const manifest = readTranscriptMemoryPolicyExportManifest(scope);
     const subject = readCurrentSessionMemorySubject(scope);
     const events = await loadTranscriptEvents(scope);
@@ -1505,23 +1666,25 @@ describe("transcript memory policy", () => {
     // Keep policy-set and run-exposure history, but make this a genuine import
     // into a newly materialized transcript generation with the same identity.
     database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
-    await importSqliteSessionRows({
-      agentId: scope.agentId,
-      confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
-      confirmedTranscriptPolicyManifest: manifest,
-      entry: { sessionId: scope.sessionId, updatedAt: 2 },
-      env: scope.env,
-      readTranscriptEvents(append) {
-        for (const event of events) {
-          append(event);
-        }
-      },
-      sessionKey: scope.sessionKey,
-    });
+    const restoreConfirmedImport = () =>
+      importSqliteSessionRows({
+        agentId: scope.agentId,
+        confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
+        confirmedTranscriptPolicyManifest: manifest,
+        entry: { sessionId: scope.sessionId, updatedAt: 2 },
+        env: scope.env,
+        readTranscriptEvents(append) {
+          for (const event of events) {
+            append(event);
+          }
+        },
+        sessionKey: scope.sessionKey,
+      });
+    await restoreConfirmedImport();
 
     expect(
       (await loadTranscriptEvents(scope)).map((event) => (event as { id?: string }).id),
-    ).toEqual([scope.sessionId, "confirmed-message"]);
+    ).toEqual([scope.sessionId, "confirmed-message", "confirmed-import-compaction"]);
     expect(
       database.db
         .prepare(
@@ -1531,6 +1694,195 @@ describe("transcript memory policy", () => {
         )
         .get(scope.sessionId),
     ).toMatchObject({ authorization_status: "authorized" });
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "confirmed-import-compaction"),
+    ).toEqual({ source_event_seqs_json: '["0","1"]' });
+    const repeatedImport = await restoreConfirmedImport();
+    expect(repeatedImport.transcriptEvents).toBe(0);
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "confirmed-import-compaction"),
+    ).toEqual({ source_event_seqs_json: '["0","1"]' });
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.toContain("confirmed-import-compaction");
+  });
+
+  it("requires manifest bindings and round-trips multi-digit compaction source sequences", async () => {
+    const scope = await createScope("multi-digit-compaction-import");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    for (let index = 1; index <= 10; index += 1) {
+      await appendTranscriptMessage(scope, {
+        eventId: `numeric-source-${index}`,
+        message: { role: "user", content: `numeric source ${index}` },
+      });
+    }
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "numeric-source-2",
+        id: "numeric-compaction",
+        parentId: "numeric-source-10",
+        sourceEntryIds: ["numeric-source-2", "numeric-source-10"],
+        summary: "numeric source sequence summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (let eventSeq = 0; eventSeq <= 11; eventSeq += 1) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "numeric-compaction",
+            database: writeDatabase,
+            eventSeq: 11,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [2, 10],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const staleBinding = database.db
+      .prepare(
+        `SELECT authorization_status, compaction_id, created_at, policy_set_revision,
+                source_event_seqs_json, source_policy_set_id
+           FROM memory_compaction_policy_bindings
+          WHERE session_id = ? AND compaction_id = ?`,
+      )
+      .get(scope.sessionId, "numeric-compaction") as
+      | {
+          authorization_status: string;
+          compaction_id: string;
+          created_at: number;
+          policy_set_revision: string;
+          source_event_seqs_json: string;
+          source_policy_set_id: string;
+        }
+      | undefined;
+    if (!staleBinding) {
+      throw new Error("expected a source compaction binding");
+    }
+    const manifest = readTranscriptMemoryPolicyExportManifest(scope);
+    const subject = readCurrentSessionMemorySubject(scope);
+    const events = await loadTranscriptEvents(scope);
+    if (!manifest || !subject) {
+      throw new Error("expected a current-policy manifest and source subject");
+    }
+    expect(manifest.compactionBindings).toEqual([
+      expect.objectContaining({
+        compactionId: "numeric-compaction",
+        eventSeq: 11,
+        sourceEventSeqs: [2, 10],
+      }),
+    ]);
+
+    const importTranscript = (confirmedTranscriptPolicyManifest: typeof manifest) =>
+      importSqliteSessionRows({
+        agentId: scope.agentId,
+        confirmedMemorySubjectLineage: prepareSessionMemorySubjectLineageSeed(subject),
+        confirmedTranscriptPolicyManifest,
+        entry: { sessionId: scope.sessionId, updatedAt: 2 },
+        env: scope.env,
+        readTranscriptEvents(append) {
+          for (const event of events) {
+            append(event);
+          }
+        },
+        sessionKey: scope.sessionKey,
+      });
+    database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
+    await importTranscript({ ...manifest, compactionBindings: undefined });
+    expect(
+      database.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "numeric-compaction"),
+    ).toBeUndefined();
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.not.toContain("numeric-compaction");
+
+    // A prior partial target can retain this non-FK row after its output event
+    // is gone. Continuing an omitted-binding import must not restore through it.
+    database.db
+      .prepare("DELETE FROM transcript_events WHERE session_id = ? AND seq = ?")
+      .run(scope.sessionId, 11);
+    database.db
+      .prepare(
+        `INSERT INTO memory_compaction_policy_bindings
+          (authorization_status, compaction_id, created_at, policy_set_revision, session_id,
+           source_event_seqs_json, source_policy_set_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        staleBinding.authorization_status,
+        staleBinding.compaction_id,
+        staleBinding.created_at,
+        staleBinding.policy_set_revision,
+        scope.sessionId,
+        staleBinding.source_event_seqs_json,
+        staleBinding.source_policy_set_id,
+      );
+    await importTranscript({ ...manifest, compactionBindings: undefined });
+    expect(
+      database.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "numeric-compaction"),
+    ).toBeUndefined();
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.not.toContain("numeric-compaction");
+
+    database.db.prepare("DELETE FROM session_windows WHERE session_id = ?").run(scope.sessionId);
+    await importTranscript(manifest);
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "numeric-compaction"),
+    ).toEqual({ source_event_seqs_json: '["10","2"]' });
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.toContain("numeric-compaction");
   });
 
   it("leaves a manifest-mismatched import pending", async () => {
@@ -1544,9 +1896,36 @@ describe("transcript memory policy", () => {
       eventId: "confirmed-message",
       message: { role: "user", content: "original bytes" },
     });
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: scope.sessionId,
+        id: "mismatched-import-compaction",
+        parentId: "confirmed-message",
+        sourceEntryIds: [scope.sessionId, "confirmed-message"],
+        summary: "must stay unavailable after tampering",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
     const database = insertCutover(scope);
-    insertPolicyFixture({ scope, eventSeq: 0 });
-    insertPolicyFixture({ scope, eventSeq: 1 });
+    for (const eventSeq of [0, 1, 2]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "mismatched-import-compaction",
+            database: writeDatabase,
+            eventSeq: 2,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
     const manifest = readTranscriptMemoryPolicyExportManifest(scope);
     const subject = readCurrentSessionMemorySubject(scope);
     const events = await loadTranscriptEvents(scope);
@@ -1568,6 +1947,7 @@ describe("transcript memory policy", () => {
           parentId: null,
           message: { role: "user", content: "tampered bytes" },
         });
+        append(events[2] as object);
       },
       sessionKey: scope.sessionKey,
     });
@@ -1579,6 +1959,24 @@ describe("transcript memory policy", () => {
           `SELECT authorization_status
              FROM transcript_event_memory_policies
             WHERE session_id = ? AND event_seq = 1`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending" });
+    expect(
+      database.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "mismatched-import-compaction"),
+    ).toBeUndefined();
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 2`,
         )
         .get(scope.sessionId),
     ).toEqual({ authorization_status: "pending" });
@@ -1705,6 +2103,187 @@ describe("transcript memory policy", () => {
     ).toEqual([{ authorization_status: "pending" }]);
   });
 
+  it("clears a destination compaction binding when canonical repair replaces its transcript", async () => {
+    const source = await createScope("canonical-repair-source");
+    const targetBase = await createScope("canonical-repair-target");
+    const target = { ...targetBase, sessionId: source.sessionId };
+    await upsertSessionEntry(source, {
+      sessionFile: "sqlite",
+      sessionId: source.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(source, {
+      eventId: "canonical-source-message",
+      message: { role: "user", content: "source replacement" },
+    });
+    await upsertSessionEntry(target, {
+      sessionFile: "sqlite",
+      sessionId: target.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(target, {
+      eventId: "canonical-target-message",
+      message: { role: "user", content: "target replacement" },
+    });
+    await replaceTranscriptEvents(target, [
+      ...(await loadTranscriptEvents(target)),
+      {
+        firstKeptEntryId: target.sessionId,
+        id: "canonical-repair-compaction",
+        parentId: "canonical-target-message",
+        sourceEntryIds: [target.sessionId, "canonical-target-message"],
+        summary: "stale destination summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const targetDatabase = insertCutover(target);
+    for (const eventSeq of [0, 1, 2]) {
+      insertPolicyFixture({ scope: target, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "canonical-repair-compaction",
+            database: writeDatabase,
+            eventSeq: 2,
+            sessionId: target.sessionId,
+            sourceEventSeqs: [0, 1],
+          }),
+        ).toBe(true);
+      },
+      { agentId: target.agentId, env: target.env },
+    );
+    const sourceDatabase = openOpenClawAgentDatabase({ agentId: source.agentId, env: source.env });
+
+    copySqliteSessionOwnedStateForCanonicalRepair({
+      canonicalKey: target.sessionKey,
+      destinationDatabase: targetDatabase,
+      source: { agentId: source.agentId, storePath: sourceDatabase.path },
+      sourceEntries: [{ sessionId: source.sessionId, updatedAt: 1 }],
+      sourceKeys: [source.sessionKey],
+    });
+
+    expect(
+      targetDatabase.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(target.sessionId, "canonical-repair-compaction"),
+    ).toBeUndefined();
+  });
+
+  it("rebuilds a compaction binding only through exact header-repair mappings", async () => {
+    const scope = await createScope("compaction-header-repair");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "repair-source-user",
+      message: { role: "user", content: "repair source user" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "repair-source-assistant",
+      message: { role: "assistant", content: "repair source assistant" },
+    });
+    const withoutHeader = (await loadTranscriptEvents(scope)).filter(
+      (event) => (event as { type?: unknown }).type !== "session",
+    );
+    await replaceTranscriptEvents(scope, [
+      ...withoutHeader,
+      {
+        firstKeptEntryId: "repair-source-user",
+        id: "repair-compaction",
+        parentId: "repair-source-assistant",
+        sourceEntryIds: ["repair-source-user", "repair-source-assistant"],
+        summary: "repair summary",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "repair-compaction",
+            database: writeDatabase,
+            eventSeq: 2,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [0, 1],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const sourceRows = database.db
+      .prepare(
+        `SELECT event_json, seq
+           FROM transcript_events
+          WHERE session_id = ?
+          ORDER BY seq ASC`,
+      )
+      .all(scope.sessionId) as Array<{ event_json: string; seq: number }>;
+    const repairedHeader = {
+      id: scope.sessionId,
+      timestamp: "2026-08-06T00:00:00.000Z",
+      type: "session",
+      version: 3,
+    };
+    const resolved = resolveSqliteScope(scope);
+    runOpenClawAgentWriteTransaction((writeDatabase) => {
+      replaceSqliteTranscriptEventsInTransaction(
+        writeDatabase,
+        { ...resolved, sessionId: scope.sessionId },
+        [
+          repairedHeader,
+          ...withoutHeader,
+          {
+            firstKeptEntryId: "repair-source-user",
+            id: "repair-compaction",
+            parentId: "repair-source-assistant",
+            sourceEntryIds: ["repair-source-user", "repair-source-assistant"],
+            summary: "repair summary",
+            tokensBefore: 10,
+            type: "compaction",
+          },
+        ],
+        {
+          preservedMemoryPolicyBindings: sourceRows.map((sourceRow, index) =>
+            createTranscriptMemoryPolicyRewriteBinding({
+              sourceEventJson: sourceRow.event_json,
+              sourceEventSeq: sourceRow.seq,
+              targetEventIndex: index + 1,
+            }),
+          ),
+        },
+      );
+    }, toDatabaseOptions(resolved));
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT source_event_seqs_json
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "repair-compaction"),
+    ).toEqual({ source_event_seqs_json: '["1","2"]' });
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.toContain("repair-compaction");
+  });
+
   it("preserves explicitly bound rows but leaves reordered duplicate raw replacements pending", async () => {
     const scope = await createScope("replacement-pending");
     await upsertSessionEntry(scope, {
@@ -1789,6 +2368,103 @@ describe("transcript memory policy", () => {
       { authorization_status: "pending", event_seq: 2 },
     ]);
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([]);
+  });
+
+  it("invalidates a compaction when an exact rewrite changes one captured source", async () => {
+    const scope = await createScope("compaction-rewrite-pending");
+    await upsertSessionEntry(scope, {
+      sessionFile: "sqlite",
+      sessionId: scope.sessionId,
+      updatedAt: 1,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "rewrite-source-user",
+      message: { role: "user", content: "original source" },
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "rewrite-source-assistant",
+      message: { role: "assistant", content: "original answer" },
+    });
+    await replaceTranscriptEvents(scope, [
+      ...(await loadTranscriptEvents(scope)),
+      {
+        firstKeptEntryId: "rewrite-source-user",
+        id: "rewrite-compaction",
+        parentId: "rewrite-source-assistant",
+        sourceEntryIds: ["rewrite-source-user", "rewrite-source-assistant"],
+        summary: "must become unavailable",
+        tokensBefore: 10,
+        type: "compaction",
+      },
+    ]);
+    const database = insertCutover(scope);
+    for (const eventSeq of [0, 1, 2, 3]) {
+      insertPolicyFixture({ scope, eventSeq });
+    }
+    runOpenClawAgentWriteTransaction(
+      (writeDatabase) => {
+        expect(
+          recordTranscriptCompactionPolicyInTransaction({
+            compactionId: "rewrite-compaction",
+            database: writeDatabase,
+            eventSeq: 3,
+            sessionId: scope.sessionId,
+            sourceEventSeqs: [1, 2],
+          }),
+        ).toBe(true);
+      },
+      { agentId: scope.agentId, env: scope.env },
+    );
+    const source = database.db
+      .prepare(
+        `SELECT event_json, seq
+           FROM transcript_events
+          WHERE session_id = ? AND seq = 1`,
+      )
+      .get(scope.sessionId) as { event_json: string; seq: number };
+    const resolved = resolveSqliteScope(scope);
+    runOpenClawAgentWriteTransaction((writeDatabase) => {
+      rewriteSqliteTranscriptEventRowsInTransaction(
+        writeDatabase,
+        { ...resolved, sessionId: scope.sessionId },
+        [
+          {
+            event: {
+              id: "rewrite-source-user",
+              message: { content: "changed source", role: "user" },
+              parentId: null,
+              type: "message",
+            },
+            expectedEventJson: source.event_json,
+            seq: source.seq,
+          },
+        ],
+      );
+    }, toDatabaseOptions(resolved));
+
+    expect(
+      database.db
+        .prepare(
+          `SELECT 1
+             FROM memory_compaction_policy_bindings
+            WHERE session_id = ? AND compaction_id = ?`,
+        )
+        .get(scope.sessionId, "rewrite-compaction"),
+    ).toBeUndefined();
+    expect(
+      database.db
+        .prepare(
+          `SELECT authorization_status
+             FROM transcript_event_memory_policies
+            WHERE session_id = ? AND event_seq = 3`,
+        )
+        .get(scope.sessionId),
+    ).toEqual({ authorization_status: "pending" });
+    await expect(
+      loadTranscriptEvents(scope).then((events) =>
+        events.map((event) => (event as { id?: string }).id),
+      ),
+    ).resolves.not.toContain("rewrite-compaction");
   });
 
   it("makes a changed in-place transcript row pending until it receives new policy evidence", async () => {

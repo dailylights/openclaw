@@ -40,6 +40,7 @@ import { buildSessionResetBoundaryPlan } from "./session-reset-boundary-event.js
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import {
   captureAuthorizedTranscriptMemoryArchivePoliciesInTransaction,
+  clearTranscriptCompactionPoliciesInTransaction,
   persistTranscriptMemoryArchiveInTransaction,
   readAuthorizedTranscriptEventSeqs,
 } from "./session-transcript-memory-policy.js";
@@ -532,8 +533,9 @@ export { collectSqliteSessionStateIdsForEntry };
 function deleteSqliteSessionStateRows(database: OpenClawAgentDatabase, sessionId: string): void {
   const db = getSessionKysely(database.db);
   // The window row cascades canonical transcript tables, but FTS is virtual;
-  // clear its projection before dropping the owner row.
+  // clear its projection and non-FK compaction rows before dropping the owner row.
   deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
+  clearTranscriptCompactionPoliciesInTransaction({ database, sessionId });
   executeSqliteQuerySync(
     database.db,
     db.deleteFrom("session_windows").where("session_id", "=", sessionId),

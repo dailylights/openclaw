@@ -33,6 +33,7 @@ import {
   deleteSessionTranscriptIndexInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
+import { clearTranscriptCompactionPoliciesInTransaction } from "./session-transcript-memory-policy.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { SessionEntry } from "./types.js";
@@ -651,6 +652,12 @@ function copySqliteSessionGenerationRows(params: {
   ) {
     return false;
   }
+  // Cross-store repair copies only raw transcript generation rows. Its old
+  // non-FK binding cannot authorize the replacement transcript's summaries.
+  clearTranscriptCompactionPoliciesInTransaction({
+    database: params.destination,
+    sessionId: params.sessionId,
+  });
   for (const table of [
     "transcript_event_identities",
     "transcript_events",

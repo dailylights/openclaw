@@ -19,6 +19,7 @@ import {
   type TrustedSessionMemorySubjectSeed,
 } from "./session-memory-subject.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
+import { clearTranscriptCompactionPoliciesInTransaction } from "./session-transcript-memory-policy.js";
 import {
   foldedSessionKeyAliasCandidates,
   normalizeStoreSessionKey,
@@ -287,6 +288,9 @@ export function deleteSqliteTranscriptEventsInTransaction(
   sessionId: string,
 ): boolean {
   const db = getSessionKysely(database.db);
+  // Compaction bindings are session-scoped rather than transcript-row FKs.
+  // Clear them before deleting rows so a later session with the same id cannot inherit authority.
+  clearTranscriptCompactionPoliciesInTransaction({ database, sessionId });
   executeSqliteQuerySync(
     database.db,
     db.deleteFrom("transcript_event_identities").where("session_id", "=", sessionId),

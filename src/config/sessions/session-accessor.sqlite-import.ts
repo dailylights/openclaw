@@ -13,6 +13,7 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import {
   advanceTranscriptMutationAtInTransaction,
+  readNextTranscriptSeq,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
@@ -21,9 +22,12 @@ import {
   type TrustedSessionMemorySubjectSeed,
 } from "./session-memory-subject.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
-import type {
-  PreservedTranscriptMemoryPolicy,
-  TranscriptMemoryPolicyExportManifest,
+import {
+  clearTranscriptCompactionPoliciesInTransaction,
+  rebuildTranscriptCompactionPoliciesInTransaction,
+  type PreservedTranscriptCompactionPolicy,
+  type PreservedTranscriptMemoryPolicy,
+  type TranscriptMemoryPolicyExportManifest,
 } from "./session-transcript-memory-policy.js";
 import type { SessionEntry } from "./types.js";
 
@@ -52,9 +56,11 @@ type SqliteSessionImportRowsResult = {
 };
 
 type ConfirmedTranscriptPolicyImport = {
+  compactionBindings?: readonly PreservedTranscriptCompactionPolicy[];
   orderedEventBindings: readonly Readonly<{
     contentSha256: string;
     preserved: PreservedTranscriptMemoryPolicy;
+    sourceEventSeq: number;
   }>[];
   sessionIdentityRevision?: string;
 };
@@ -74,7 +80,11 @@ function prepareConfirmedTranscriptPolicyImport(params: {
     return undefined;
   }
   const orderedEventBindings: Array<
-    Readonly<{ contentSha256: string; preserved: PreservedTranscriptMemoryPolicy }>
+    Readonly<{
+      contentSha256: string;
+      preserved: PreservedTranscriptMemoryPolicy;
+      sourceEventSeq: number;
+    }>
   > = [];
   const identityRevisions = new Set<string>();
   let previousEventSeq = -1;
@@ -100,12 +110,41 @@ function prepareConfirmedTranscriptPolicyImport(params: {
     }
     previousEventSeq = eventSeq;
     identityRevisions.add(policy.session_identity_revision);
-    orderedEventBindings.push({ contentSha256, preserved });
+    orderedEventBindings.push({ contentSha256, preserved, sourceEventSeq: eventSeq });
   }
   if (identityRevisions.size > 1) {
     return undefined;
   }
+  const eventSeqs = new Set(orderedEventBindings.map((binding) => binding.sourceEventSeq));
+  const compactionBindings = manifest.compactionBindings;
+  if (
+    compactionBindings !== undefined &&
+    (!Array.isArray(compactionBindings) ||
+      !compactionBindings.every(
+        (binding, index) =>
+          typeof binding?.compactionId === "string" &&
+          binding.compactionId.trim().length > 0 &&
+          Number.isSafeInteger(binding.eventSeq) &&
+          binding.eventSeq >= 0 &&
+          (index === 0 || (compactionBindings[index - 1]?.eventSeq ?? -1) < binding.eventSeq) &&
+          Array.isArray(binding.sourceEventSeqs) &&
+          binding.sourceEventSeqs.length > 0 &&
+          binding.sourceEventSeqs.every(
+            (sourceEventSeq, sourceIndex) =>
+              Number.isSafeInteger(sourceEventSeq) &&
+              sourceEventSeq >= 0 &&
+              sourceEventSeq < binding.eventSeq &&
+              eventSeqs.has(sourceEventSeq) &&
+              (sourceIndex === 0 ||
+                (binding.sourceEventSeqs[sourceIndex - 1] ?? -1) < sourceEventSeq),
+          ) &&
+          eventSeqs.has(binding.eventSeq),
+      ))
+  ) {
+    return undefined;
+  }
   return {
+    ...(compactionBindings ? { compactionBindings } : {}),
     orderedEventBindings,
     ...(identityRevisions.size === 1 ? { sessionIdentityRevision: [...identityRevisions][0] } : {}),
   };
@@ -184,10 +223,21 @@ export async function importSqliteSessionRows(
           ...resolved,
           sessionId: params.entry.sessionId,
         };
+        // A resumed import cannot reconstruct a complete source-to-target graph
+        // from deduped rows, so only a fresh target may replace its bindings.
+        const targetTranscriptIsFresh =
+          readNextTranscriptSeq(database, params.entry.sessionId) === 0;
         const existingEventJson = readTranscriptEventJsonSetInTransaction(
           database,
           params.entry.sessionId,
         );
+        if (targetTranscriptIsFresh) {
+          clearTranscriptCompactionPoliciesInTransaction({
+            database,
+            sessionId: params.entry.sessionId,
+          });
+        }
+        const eventSeqBySourceEventSeq = new Map<number, number>();
         let sourceEventIndex = 0;
         params.readTranscriptEvents((event) => {
           // Visible exports omit denied rows, so the manifest's sorted order is
@@ -202,6 +252,7 @@ export async function importSqliteSessionRows(
             manifestEvent?.contentSha256 === sha256(eventJson)
               ? manifestEvent.preserved
               : undefined;
+          const targetEventSeq = readNextTranscriptSeq(database, params.entry.sessionId);
           if (
             appendTranscriptEventInTransaction(database, transcriptScope, event, {
               allowStoredAlias: true,
@@ -213,10 +264,28 @@ export async function importSqliteSessionRows(
               touchMutation: false,
             })
           ) {
+            if (preservedMemoryPolicy && manifestEvent) {
+              eventSeqBySourceEventSeq.set(manifestEvent.sourceEventSeq, targetEventSeq);
+            }
             existingEventJson.add(eventJson);
             transcriptEvents += 1;
           }
         });
+        if (targetTranscriptIsFresh) {
+          rebuildTranscriptCompactionPoliciesInTransaction({
+            captured: confirmedPolicyImport?.compactionBindings
+              ? new Map(
+                  confirmedPolicyImport.compactionBindings.map((binding) => [
+                    binding.eventSeq,
+                    binding,
+                  ]),
+                )
+              : undefined,
+            database,
+            eventSeqBySourceEventSeq,
+            sessionId: params.entry.sessionId,
+          });
+        }
         reconcileSessionTranscriptIndexInTransaction(database.db, params.entry.sessionId);
         publishSqliteSessionEntryCacheInvalidation(database);
       }

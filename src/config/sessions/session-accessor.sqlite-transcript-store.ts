@@ -37,11 +37,14 @@ import {
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
 import {
+  captureAuthorizedTranscriptCompactionPoliciesInTransaction,
   captureAuthorizedTranscriptMemoryPoliciesInTransaction,
+  clearTranscriptCompactionPoliciesInTransaction,
   copyTranscriptMemoryPolicyInTransaction,
   invalidateTranscriptMemoryPolicyInTransaction,
   recordTranscriptMemoryPolicyInTransaction,
   recordTranscriptCompactionPolicyInTransaction,
+  rebuildTranscriptCompactionPoliciesInTransaction,
   restoreTranscriptMemoryPolicyInTransaction,
   isTranscriptMemoryPolicyEnforcedInDatabase,
   type PreservedTranscriptMemoryPolicy,
@@ -138,6 +141,16 @@ export function appendTranscriptEventInTransaction(
       created_at: createdAt,
     }),
   );
+  const compactionId = readCompactionEventId(persistedEvent);
+  // A newly appended pending import must not reuse an orphaned binding from a
+  // previous partial target. Retries return above before this can clear valid state.
+  if (options.forceMemoryPolicyPending === true && compactionId) {
+    clearTranscriptCompactionPoliciesInTransaction({
+      compactionId,
+      database,
+      sessionId: scope.sessionId,
+    });
+  }
   const initiallyAuthorized = recordTranscriptMemoryPolicyInTransaction({
     database,
     sessionId: scope.sessionId,
@@ -167,8 +180,9 @@ export function appendTranscriptEventInTransaction(
             createdAt,
           })
         : initiallyAuthorized;
-  const compactionId = readCompactionEventId(persistedEvent);
-  if (memoryPolicyAuthorized && compactionId) {
+  // A forced-pending import needs its manifest's sequence binding. Payload
+  // sourceEntryIds must not reconstruct that authority alone.
+  if (memoryPolicyAuthorized && compactionId && options.forceMemoryPolicyPending !== true) {
     const sourceEventSeqs = readCompactionSourceEventSeqs({
       database,
       event: persistedEvent,
@@ -323,9 +337,33 @@ export function appendTranscriptEventsInTransaction(
     forceMemoryPolicyPending?: boolean;
   } = {},
 ): number {
+  // A replay with an existing target cannot prove a complete sequence map for
+  // its already-deduped rows; retain its bindings instead of clearing them.
+  const targetTranscriptIsFresh = readNextTranscriptSeq(database, scope.sessionId) === 0;
+  const capturedCompactionPolicies =
+    options.memoryPolicySource && targetTranscriptIsFresh
+      ? captureAuthorizedTranscriptCompactionPoliciesInTransaction({
+          database,
+          sessionId: options.memoryPolicySource.sessionId,
+        })
+      : undefined;
+  if (options.memoryPolicySource && targetTranscriptIsFresh) {
+    clearTranscriptCompactionPoliciesInTransaction({ database, sessionId: scope.sessionId });
+  }
   let appended = 0;
   let projectionNeedsRebuild = false;
+  const eventSeqBySourceEventSeq = new Map<number, number>();
   for (const event of events) {
+    const identity = readTranscriptEventIdentity(event);
+    const sourceEventSeq =
+      identity && options.memoryPolicySource
+        ? readTranscriptIdentityByEventId(
+            database,
+            options.memoryPolicySource.sessionId,
+            identity.eventId,
+          )?.seq
+        : undefined;
+    const eventSeq = readNextTranscriptSeq(database, scope.sessionId);
     if (
       appendTranscriptEventInTransaction(database, scope, event, {
         ...(options.memorySubjectSeed ? { memorySubjectSeed: options.memorySubjectSeed } : {}),
@@ -339,7 +377,21 @@ export function appendTranscriptEventsInTransaction(
       })
     ) {
       appended += 1;
+      if (sourceEventSeq !== undefined) {
+        eventSeqBySourceEventSeq.set(sourceEventSeq, eventSeq);
+      }
     }
+  }
+  if (targetTranscriptIsFresh && capturedCompactionPolicies?.size) {
+    rebuildTranscriptCompactionPoliciesInTransaction({
+      captured: capturedCompactionPolicies,
+      database,
+      eventSeqBySourceEventSeq,
+      sessionId: scope.sessionId,
+    });
+    // Replays initially index summaries as unavailable while their sequence
+    // bindings are absent. Rebuild after all old-to-new mappings are known.
+    reconcileSessionTranscriptIndexInTransaction(database.db, scope.sessionId);
   }
   if (appended > 0) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
@@ -533,6 +585,10 @@ export function replaceSqliteTranscriptEventsInTransaction(
     preservedMemoryPolicyBindings: options.preservedMemoryPolicyBindings,
     sessionId: resolved.sessionId,
   });
+  const capturedCompactionPolicies = captureAuthorizedTranscriptCompactionPoliciesInTransaction({
+    database,
+    sessionId: resolved.sessionId,
+  });
   const memoryPolicyEnforced = isTranscriptMemoryPolicyEnforcedInDatabase(database.db);
   const previousGeneration = readTranscriptGenerationInTransaction(database, resolved.sessionId);
   const deleted = deleteSqliteTranscriptEventsInTransaction(database, resolved.sessionId);
@@ -560,7 +616,9 @@ export function replaceSqliteTranscriptEventsInTransaction(
   let seq = 0;
   const seenEventIds = new Set<string>();
   const seenMessageIdempotencyKeys = new Set<string>();
+  const eventSeqBySourceEventSeq = new Map<number, number>();
   for (const [eventIndex, event] of events.entries()) {
+    const preserved = preservedPoliciesByEventIndex?.get(eventIndex);
     if (
       appendTranscriptEventRowInTransaction(
         database,
@@ -574,13 +632,22 @@ export function replaceSqliteTranscriptEventsInTransaction(
         options.createdAtByIndex?.[eventIndex],
         {
           forceMemoryPolicyPending: memoryPolicyEnforced,
-          preservedMemoryPolicy: preservedPoliciesByEventIndex?.get(eventIndex),
+          ...(preserved ? { preservedMemoryPolicy: preserved.policy } : {}),
         },
       )
     ) {
+      if (preserved) {
+        eventSeqBySourceEventSeq.set(preserved.sourceEventSeq, seq);
+      }
       seq += 1;
     }
   }
+  rebuildTranscriptCompactionPoliciesInTransaction({
+    captured: capturedCompactionPolicies,
+    database,
+    eventSeqBySourceEventSeq,
+    sessionId: resolved.sessionId,
+  });
   if (deleted || seq > 0) {
     recordTranscriptReplacementMutation(database, resolved.sessionId, preservedTranscriptUpdatedAt);
     reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
@@ -592,7 +659,9 @@ function collectPreservedTranscriptPoliciesForRewrite(params: {
   events: readonly TranscriptEvent[];
   preservedMemoryPolicyBindings: readonly TranscriptMemoryPolicyRewriteBinding[] | undefined;
   sessionId: string;
-}): Map<number, PreservedTranscriptMemoryPolicy> | undefined {
+}):
+  | Map<number, Readonly<{ policy: PreservedTranscriptMemoryPolicy; sourceEventSeq: number }>>
+  | undefined {
   const { database, events, preservedMemoryPolicyBindings, sessionId } = params;
   if (!preservedMemoryPolicyBindings) {
     return undefined;
@@ -610,7 +679,10 @@ function collectPreservedTranscriptPoliciesForRewrite(params: {
       .orderBy("seq", "asc"),
   ).rows;
   const sourceEventJsonBySeq = new Map(rows.map((row) => [row.seq, row.event_json]));
-  const boundPolicies = new Map<number, PreservedTranscriptMemoryPolicy>();
+  const boundPolicies = new Map<
+    number,
+    Readonly<{ policy: PreservedTranscriptMemoryPolicy; sourceEventSeq: number }>
+  >();
   const usedSourceSeqs = new Set<number>();
   for (const binding of preservedMemoryPolicyBindings) {
     if (
@@ -637,7 +709,10 @@ function collectPreservedTranscriptPoliciesForRewrite(params: {
       continue;
     }
     usedSourceSeqs.add(binding.sourceEventSeq);
-    boundPolicies.set(binding.targetEventIndex, policy);
+    boundPolicies.set(binding.targetEventIndex, {
+      policy,
+      sourceEventSeq: binding.sourceEventSeq,
+    });
   }
   return boundPolicies;
 }
@@ -676,13 +751,30 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
     return;
   }
   const db = getSessionKysely(database.db);
+  const capturedCompactionPolicies = captureAuthorizedTranscriptCompactionPoliciesInTransaction({
+    database,
+    sessionId: resolved.sessionId,
+  });
+  const rewrittenSeqs = new Set(rows.map((row) => row.seq));
+  const eventSeqBySourceEventSeq = new Map(
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .selectFrom("transcript_events")
+        .select("seq")
+        .where("session_id", "=", resolved.sessionId)
+        .orderBy("seq", "asc"),
+    ).rows.flatMap((row) => (rewrittenSeqs.has(row.seq) ? [] : [[row.seq, row.seq] as const])),
+  );
+  clearTranscriptCompactionPoliciesInTransaction({ database, sessionId: resolved.sessionId });
   for (const row of rows) {
     const persistedEvent = canonicalizeTranscriptEventMedia(row.event);
+    const persistedEventJson = JSON.stringify(persistedEvent);
     const result = executeSqliteQuerySync(
       database.db,
       db
         .updateTable("transcript_events")
-        .set({ event_json: JSON.stringify(persistedEvent) })
+        .set({ event_json: persistedEventJson })
         .where("session_id", "=", resolved.sessionId)
         .where("seq", "=", row.seq)
         .where("event_json", "=", row.expectedEventJson),
@@ -692,7 +784,9 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
         `Transcript row ${resolved.sessionId}:${row.seq} changed before exact rewrite`,
       );
     }
-    if (JSON.stringify(persistedEvent) !== row.expectedEventJson) {
+    if (persistedEventJson === row.expectedEventJson) {
+      eventSeqBySourceEventSeq.set(row.seq, row.seq);
+    } else {
       invalidateTranscriptMemoryPolicyInTransaction({
         database,
         eventSeq: row.seq,
@@ -700,6 +794,12 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       });
     }
   }
+  rebuildTranscriptCompactionPoliciesInTransaction({
+    captured: capturedCompactionPolicies,
+    database,
+    eventSeqBySourceEventSeq,
+    sessionId: resolved.sessionId,
+  });
   rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
   touchTranscriptMutationInTransaction(database, resolved.sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
@@ -717,6 +817,22 @@ export function updateSqliteTranscriptEventJsonInTransaction(
     return;
   }
   const db = getSessionKysely(database.db);
+  const capturedCompactionPolicies = captureAuthorizedTranscriptCompactionPoliciesInTransaction({
+    database,
+    sessionId,
+  });
+  const updatedSeqs = new Set(updates.map((update) => update.seq));
+  const eventSeqBySourceEventSeq = new Map(
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .selectFrom("transcript_events")
+        .select("seq")
+        .where("session_id", "=", sessionId)
+        .orderBy("seq", "asc"),
+    ).rows.flatMap((row) => (updatedSeqs.has(row.seq) ? [] : [[row.seq, row.seq] as const])),
+  );
+  clearTranscriptCompactionPoliciesInTransaction({ database, sessionId });
   for (const { seq, eventJson } of updates) {
     executeSqliteQuerySync(
       database.db,
@@ -732,6 +848,12 @@ export function updateSqliteTranscriptEventJsonInTransaction(
       sessionId,
     });
   }
+  rebuildTranscriptCompactionPoliciesInTransaction({
+    captured: capturedCompactionPolicies,
+    database,
+    eventSeqBySourceEventSeq,
+    sessionId,
+  });
   rotateTranscriptGenerationInTransaction(database, sessionId);
   deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
   reconcileSessionTranscriptIndexInTransaction(database.db, sessionId);
