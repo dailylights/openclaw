@@ -340,17 +340,17 @@ function respondUnavailable(respond: GatewayRequestHandlerOptions["respond"]): v
   respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "memory sharing is unavailable"));
 }
 
-function registerSharingMethod<TRequest extends object>(params: {
+function registerSharingMethod<TRequest extends { agentId: string }>(params: {
   api: OpenClawPluginApi;
   method: string;
   service: SharingGatewayService;
-  readRequest: (value: unknown) => TRequest & { agentId: string };
+  readRequest: (value: unknown) => TRequest;
   run: (request: TRequest, authority: SharingAuthority, service: SharingGatewayService) => unknown;
 }): void {
   params.api.registerGatewayMethod(
     params.method,
     async ({ params: rawParams, client, respond }: GatewayRequestHandlerOptions) => {
-      let request: TRequest & { agentId: string };
+      let request: TRequest;
       try {
         request = params.readRequest(rawParams);
         assertKnownAgent(params.api, request.agentId);
