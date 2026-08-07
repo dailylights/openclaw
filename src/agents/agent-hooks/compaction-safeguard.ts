@@ -43,10 +43,7 @@ import {
   MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
   readWorkspaceBootstrapFile,
 } from "../workspace-bootstrap-read.js";
-import {
-  composeSplitTurnInstructions,
-  resolveCompactionInstructions,
-} from "./compaction-instructions.js";
+import { resolveCompactionInstructions } from "./compaction-instructions.js";
 import { isCompactionMemoryPolicyEnforced } from "./compaction-memory-policy.js";
 import {
   appendSummarySection,

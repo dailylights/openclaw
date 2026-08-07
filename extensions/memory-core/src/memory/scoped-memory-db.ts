@@ -251,7 +251,7 @@ type MemoryAuditOutboxRow = {
 
 export type ScopedMemoryPublisherKind = "local-agent-owner" | "gateway-admin";
 export type ScopedMemoryProjectionTargetKind = "conversation" | "role" | "agent-shared";
-export type ScopedMemoryProjectionReviewState = "pending" | "approved" | "rejected" | "revoked";
+type ScopedMemoryProjectionReviewState = "pending" | "approved" | "rejected" | "revoked";
 
 export type MemoryProjectionRow = {
   projection_id: string;
@@ -285,7 +285,7 @@ type MemoryProjectionExposureRow = {
   recorded_at: number;
 };
 
-export type MemorySharingSettingsRow = {
+type MemorySharingSettingsRow = {
   agent_id: string;
   postbox_mode: "off" | "review-required";
   rate_limit_window_ms: number;
@@ -327,7 +327,7 @@ export type MemoryPostboxItemRow = {
   purged_at: number | null;
 };
 
-export type MemoryPostboxRateLimitRow = {
+type MemoryPostboxRateLimitRow = {
   agent_id: string;
   source_conversation_id: string;
   target_store_id: string;

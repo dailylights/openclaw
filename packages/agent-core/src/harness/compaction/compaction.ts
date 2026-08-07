@@ -784,7 +784,7 @@ export function prepareCompaction(
   for (let i = boundaryStart; i < historyEnd; i++) {
     const entry = effectiveEntries.at(i);
     const msg = entry ? getMessageFromEntryForCompaction(entry) : undefined;
-    if (msg) {
+    if (entry && msg) {
       messagesToSummarize.push(msg);
       sourceEntryIds.add(entry.id);
     }
@@ -794,7 +794,7 @@ export function prepareCompaction(
     for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
       const entry = effectiveEntries.at(i);
       const msg = entry ? getMessageFromEntryForCompaction(entry) : undefined;
-      if (msg) {
+      if (entry && msg) {
         turnPrefixMessages.push(msg);
         sourceEntryIds.add(entry.id);
       }

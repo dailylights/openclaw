@@ -31,6 +31,8 @@ const TEST_ENTRYPOINTS = [
   "sqlite-runtime-testing",
 ] as const;
 
+const NESTED_TUPLE_ENTRYPOINTS = [...TEST_ENTRYPOINTS, "memory-authorization"] as const;
+
 function createTupleAliasFixture(tuple: string, warmup: string, prewarm: boolean) {
   const fileName = "/plugin-sdk-tuple-fixture.ts";
   const source = [
@@ -203,6 +205,24 @@ describe("Plugin SDK API baseline", () => {
 
     expect(reverse.json).toBe(rendered.json);
     expect(reverse.jsonl).toBe(rendered.jsonl);
+  });
+
+  it("renders nested tuple declarations independently of entrypoint discovery order", async () => {
+    const forward = await renderPluginSdkApiBaseline({
+      entrypoints: NESTED_TUPLE_ENTRYPOINTS,
+    });
+    const reverse = await renderPluginSdkApiBaseline({
+      entrypoints: NESTED_TUPLE_ENTRYPOINTS.toReversed(),
+    });
+    const forwardMount = forward.baseline.modules
+      .find((moduleSurface) => moduleSurface.entrypoint === "memory-authorization")
+      ?.exports.find(
+        (exportSurface) => exportSurface.exportName === "AuthorizedMemoryMount",
+      )?.declaration;
+
+    expect(forwardMount).toContain("readonly capabilities: readonly (");
+    expect(reverse.json).toBe(forward.json);
+    expect(reverse.jsonl).toBe(forward.jsonl);
   });
 
   it("hashes entrypoints independently so unrelated API changes merge", () => {

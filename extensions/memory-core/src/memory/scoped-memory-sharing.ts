@@ -302,12 +302,12 @@ function toBuiltinStore(details: ScopedStoreDetails): BuiltinScopedMemoryStore {
   };
 }
 
-function expectedProjectionTargetAuthorityKind(
-  targetKind: ScopedMemoryProjectionTargetKind,
+function expectedAudienceAuthorityKind(
+  audienceKind: MemoryStoreRow["audience_kind"],
 ): MemoryStoreRow["scope_kind"] {
   // Agent-shared audiences remain owned by the agent control root; their
   // audience is shared, but granting publish never changes that ownership.
-  return targetKind === "agent-shared" ? "agent" : targetKind;
+  return audienceKind === "agent-shared" ? "agent" : audienceKind;
 }
 
 function listPolicyEntries(
@@ -375,7 +375,7 @@ function readStoreByAudience(params: {
   if (
     row.revocation_epoch !== row.policy_revision_epoch ||
     row.scope_kind !== params.audienceKind ||
-    row.authority_kind !== expectedProjectionTargetAuthorityKind(params.audienceKind)
+    row.authority_kind !== expectedAudienceAuthorityKind(params.audienceKind)
   ) {
     throw new Error("sharing target policy is unavailable");
   }

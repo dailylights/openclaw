@@ -28,6 +28,8 @@ type RegisteredMethod = {
   scope: string | undefined;
 };
 
+type SharingGatewayClient = NonNullable<GatewayRequestHandlerOptions["client"]>;
+
 const projection = {
   projectionId: "projection-1",
   sourceRevisionId: "revision-1",
@@ -109,9 +111,25 @@ let stateDir = "";
 let ownerProfileId = "";
 let ownerPrincipalId = "";
 
-function ownerClient(profileId = ownerProfileId) {
+function clientWithScopes(scopes: string[]): SharingGatewayClient {
   return {
-    connect: { scopes: ["operator.write"] },
+    connect: {
+      minProtocol: 1,
+      maxProtocol: 1,
+      client: {
+        id: "openclaw-control-ui",
+        version: "test",
+        platform: "test",
+        mode: "webchat",
+      },
+      scopes,
+    },
+  };
+}
+
+function ownerClient(profileId = ownerProfileId): SharingGatewayClient {
+  return {
+    ...clientWithScopes(["operator.write"]),
     authenticatedUserProfile: { profileId, displayName: null, hasAvatar: false, updatedAt: 1 },
   };
 }
@@ -203,7 +221,7 @@ describe("scoped memory sharing Gateway methods", () => {
       status,
       { agentId: "main" },
       {
-        connect: { scopes: ["operator.write"] },
+        ...clientWithScopes(["operator.write"]),
         authenticatedUserId: "not-a-profile@example.com",
       },
     );
@@ -213,7 +231,7 @@ describe("scoped memory sharing Gateway methods", () => {
     const admin = await invoke(
       status,
       { agentId: "main" },
-      { connect: { scopes: ["operator.admin"] } },
+      clientWithScopes(["operator.admin"]),
     );
     expect(service.status).toHaveBeenLastCalledWith({
       agentId: "main",

@@ -176,7 +176,9 @@ function createCompilerContext(repoRoot: string, entrypoints: readonly string[])
         relativePath(repoRoot, path.resolve(right)),
       ),
     );
-  const program = ts.createProgram(fileNames, parsedConfig.options);
+  // API manifests need deterministic type-union order across fresh compiler contexts.
+  const compilerOptions = { ...parsedConfig.options, stableTypeOrdering: true };
+  const program = ts.createProgram(fileNames, compilerOptions);
   return {
     checker: program.getTypeChecker(),
     printer: ts.createPrinter({ newLine: ts.NewLineKind.LineFeed, removeComments: true }),
@@ -685,7 +687,10 @@ export async function renderPluginSdkApiBaseline(params?: {
   entrypoints?: readonly string[];
 }): Promise<PluginSdkApiBaselineRender> {
   const repoRoot = params?.repoRoot ?? resolveRepoRoot();
-  const entrypoints = params?.entrypoints ?? listPluginSdkApiBaselineEntrypoints();
+  // TypeChecker discovery can affect structural union rendering, so use one order throughout.
+  const entrypoints = [...(params?.entrypoints ?? listPluginSdkApiBaselineEntrypoints())].toSorted(
+    compareText,
+  );
   validateMetadata();
   const { checker, printer, program } = createCompilerContext(repoRoot, entrypoints);
   const modules = entrypoints.map((entrypoint) =>

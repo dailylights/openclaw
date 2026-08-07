@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
-import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.generated.js";
+import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 
 const MEMORY_ACCESS_AUDIT_SCHEMA_START = "CREATE TABLE IF NOT EXISTS memory_access_audit (";
 const MEMORY_ACCESS_AUDIT_SCHEMA_END = "CREATE TABLE IF NOT EXISTS session_state_events (";

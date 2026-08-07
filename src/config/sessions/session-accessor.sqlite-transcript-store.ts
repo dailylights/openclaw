@@ -44,6 +44,7 @@ import {
   invalidateTranscriptMemoryPolicyInTransaction,
   recordTranscriptMemoryPolicyInTransaction,
   recordTranscriptCompactionPolicyInTransaction,
+  readAuthorizedTranscriptEventSeqs,
   rebuildTranscriptCompactionPoliciesInTransaction,
   restoreTranscriptMemoryPolicyInTransaction,
   isTranscriptMemoryPolicyEnforcedInDatabase,

@@ -340,7 +340,7 @@ function respondUnavailable(respond: GatewayRequestHandlerOptions["respond"]): v
   respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "memory sharing is unavailable"));
 }
 
-function registerSharingMethod<TRequest>(params: {
+function registerSharingMethod<TRequest extends object>(params: {
   api: OpenClawPluginApi;
   method: string;
   service: SharingGatewayService;

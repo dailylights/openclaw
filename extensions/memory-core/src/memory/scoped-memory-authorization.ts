@@ -26,7 +26,6 @@ import {
   SCOPED_MEMORY_OPERATION_REQUIREMENTS,
 } from "./scoped-memory-policy.js";
 import { resolveBuiltinScopedMemoryArtifactPath } from "./scoped-memory-resources.js";
-import { createScopedMemorySourcePolicySetId } from "./scoped-memory-store.js";
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;

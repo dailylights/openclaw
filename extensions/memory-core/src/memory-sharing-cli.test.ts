@@ -1,11 +1,12 @@
 // Memory sharing CLI tests cover its Gateway-only control-plane mapping.
 import { Command } from "commander";
+import type { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { registerMemoryCli } from "./cli.js";
 import { registerMemorySharingCli } from "./memory-sharing-cli.js";
 
 function createSharingCli() {
-  const callGateway = vi.fn(async () => ({ accepted: true }));
+  const callGateway = vi.fn<typeof callGatewayFromCli>(async () => ({ accepted: true }));
   const writeResult = vi.fn();
   const program = new Command();
   program.name("test");

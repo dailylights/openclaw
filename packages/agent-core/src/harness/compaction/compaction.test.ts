@@ -676,6 +676,7 @@ describe("split-turn compaction", () => {
     const result = await compact(
       {
         firstKeptEntryId: "kept-entry",
+        sourceEntryIds: [],
         messagesToSummarize: [{ role: "user", content: "history", timestamp: 1 }],
         turnPrefixMessages: [{ role: "user", content: "prefix", timestamp: 2 }],
         isSplitTurn: true,

@@ -130,7 +130,7 @@ function prepareConfirmedTranscriptPolicyImport(params: {
           Array.isArray(binding.sourceEventSeqs) &&
           binding.sourceEventSeqs.length > 0 &&
           binding.sourceEventSeqs.every(
-            (sourceEventSeq, sourceIndex) =>
+            (sourceEventSeq: number, sourceIndex: number) =>
               Number.isSafeInteger(sourceEventSeq) &&
               sourceEventSeq >= 0 &&
               sourceEventSeq < binding.eventSeq &&

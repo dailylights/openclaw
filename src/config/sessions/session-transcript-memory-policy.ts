@@ -952,6 +952,11 @@ function isStoredTranscriptEventAuthorized(
   if (!compaction) {
     return true;
   }
+  // The binding check proves both companions exist, but its boolean result
+  // cannot carry that narrowing into the compaction-specific revalidation.
+  if (!detail || !policySet) {
+    return false;
+  }
   return isStoredCompactionPolicyAuthorized({
     db,
     compactionId: compaction.id,
