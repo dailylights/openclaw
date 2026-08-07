@@ -228,11 +228,7 @@ describe("scoped memory sharing Gateway methods", () => {
     expect(service.status).toHaveBeenCalledTimes(1);
     expect(profilelessWriter.mock.calls[0]?.[2]).toMatchObject({ code: "FORBIDDEN" });
 
-    const admin = await invoke(
-      status,
-      { agentId: "main" },
-      clientWithScopes(["operator.admin"]),
-    );
+    const admin = await invoke(status, { agentId: "main" }, clientWithScopes(["operator.admin"]));
     expect(service.status).toHaveBeenLastCalledWith({
       agentId: "main",
       authority: { kind: "gateway-admin", id: "gateway-admin" },
