@@ -372,12 +372,8 @@ enum CLIInstaller {
             let summary = installedVersion.map { "Installed openclaw \($0)." } ?? "Installed openclaw."
             self.rememberInstallPolicy(target)
             self.recordInstallResult(code: "ready", failed: false)
-            self.installLogger.info("[DEBUG-120050] CLI install success callback starting")
             await statusHandler(summary)
-            self.installLogger.info("[DEBUG-120050] CLI install success callback completed")
-            self.installLogger.info("[DEBUG-120050] CLI installed notification starting")
             NotificationCenter.default.post(name: .openclawCLIInstalled, object: nil)
-            self.installLogger.info("[DEBUG-120050] CLI installed notification completed")
             return true
         }
 
@@ -599,11 +595,9 @@ enum CLIInstaller {
     {
         guard mode == .local, !paused else { return .deferred }
         start()
-        self.installLogger.info("[DEBUG-120050] local Gateway start callback completed")
         // The process manager owns launchd installation and its first readiness cycle. Wait for
         // that lifecycle before taking the onboarding verdict so the two probes cannot race.
         await waitForStartupAttempt()
-        self.installLogger.info("[DEBUG-120050] local Gateway startup attempt completed")
         return await waitUntilReady() ? .ready : .failed
     }
 

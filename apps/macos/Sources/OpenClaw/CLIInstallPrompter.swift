@@ -153,7 +153,6 @@ final class CLIInstallPrompter {
                 self.logger.info("managed CLI repair: \(message, privacy: .public)")
             }
         }
-        self.logger.info("[DEBUG-120050] CLI installer returned installed=\(installed, privacy: .public)")
         var activated = false
         if installed {
             if shouldRestartManagedGateway {
@@ -171,13 +170,11 @@ final class CLIInstallPrompter {
             }
             let activation: CLIInstaller.LocalGatewayActivation?
             if usesLocalGateway {
-                self.logger.info("[DEBUG-120050] local Gateway activation starting")
                 await status.set("Starting OpenClaw Gateway…")
                 if !showCompletionAlert {
                     self.logger.info("managed CLI repair: Starting OpenClaw Gateway…")
                 }
                 activation = await CLIInstaller.activateLocalGateway()
-                self.logger.info("[DEBUG-120050] local Gateway activation completed")
             } else {
                 activation = nil
             }

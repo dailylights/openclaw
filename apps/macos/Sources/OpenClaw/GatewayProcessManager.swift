@@ -377,17 +377,10 @@ final class GatewayProcessManager {
                     self.gatewayStartTaskGeneration = nil
                 }
             }
-            self.logger.info("[DEBUG-120050] Gateway start task entering attach phase")
-            let attached = await self.attachExistingGatewayAfterPendingDisable(
-                startGeneration: startGeneration)
-            self.logger.info(
-                "[DEBUG-120050] Gateway start task attach phase completed attached=\(attached, privacy: .public)")
-            if attached {
+            if await self.attachExistingGatewayAfterPendingDisable(startGeneration: startGeneration) {
                 return
             }
-            self.logger.info("[DEBUG-120050] Gateway start task entering launchd phase")
             await self.enableLaunchdGateway(startGeneration: startGeneration)
-            self.logger.info("[DEBUG-120050] Gateway start task launchd phase completed")
         }
         self.gatewayStartTaskGeneration = startGeneration
         self.gatewayStartTask = task
@@ -520,9 +513,7 @@ final class GatewayProcessManager {
     {
         // A gateway that is still reachable during uninstall is not reusable. Let the stop finish
         // before attachment so the new lifecycle cannot latch onto a process launchd then removes.
-        self.logger.info("[DEBUG-120050] Gateway attach waiting for pending launchd disable")
         await self.waitForPendingLaunchAgentDisable()
-        self.logger.info("[DEBUG-120050] Gateway attach pending launchd disable completed")
         guard self.isCurrentGatewayStart(startGeneration) else { return true }
         return await self.attachExistingGatewayIfAvailable(
             port: requestedPort,
@@ -1105,10 +1096,14 @@ extension GatewayProcessManager {
                         timeoutMs: timeoutMs,
                         retryTransportFailures: false)
                 })
-            await connection.shutdown()
+            // Probe-local cleanup must not extend readiness past its deadline, even after
+            // the Gateway answered. The task retains the isolated connection until shutdown.
+            Task { await connection.shutdown() }
             return response
         } catch {
-            await connection.shutdown()
+            // A timed-out socket connect may ignore cancellation and keep the connection actor busy.
+            // Queue probe-local cleanup without extending the readiness deadline behind that work.
+            Task { await connection.shutdown() }
             throw error
         }
     }
