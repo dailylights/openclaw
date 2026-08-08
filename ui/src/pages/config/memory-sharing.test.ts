@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
-import { hasMemorySharingGatewayMethods } from "./memory-sharing.ts";
+import { hasMemorySharingGatewayMethods } from "./memory-sharing-protocol.ts";
 import "./memory-sharing.ts";
 
 type Request = (method: string, params: Record<string, unknown>) => Promise<unknown>;
@@ -165,7 +165,7 @@ describe("MemorySharingElement", () => {
         ...element.querySelectorAll<HTMLSelectElement>("#memory-sharing-target-kind option"),
       ]
         .map((option) => option.value)
-        .sort();
+        .toSorted();
       expect(targets).toEqual(["agent-shared", "conversation", "role"]);
       const targetKind = element.querySelector<HTMLSelectElement>("#memory-sharing-target-kind");
       if (!targetKind) {

@@ -1,349 +1,29 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import {
-  renderSettingsRow,
-  renderSettingsSection,
-  renderSettingsStatus,
-  renderSettingsValue,
-} from "../../components/settings-ui.ts";
-import { i18n, t } from "../../i18n/index.ts";
-import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { t } from "../../i18n/index.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import "../../styles/memory-sharing.css";
-
-const MEMORY_SHARING_GATEWAY_METHODS = [
-  "memory.sharing.status",
-  "memory.sharing.projection.preview",
-  "memory.sharing.projection.create",
-  "memory.sharing.projection.review",
-  "memory.sharing.projection.refresh",
-  "memory.sharing.projection.revoke",
-  "memory.sharing.projection.impact",
-  "memory.sharing.postbox.list",
-  "memory.sharing.postbox.inspect",
-  "memory.sharing.postbox.review",
-  "memory.sharing.postbox.purge",
-] as const;
-
-type ProjectionTargetKind = "conversation" | "role" | "agent-shared";
-type ProjectionReviewDecision = "approve" | "reject";
-type PostboxReviewDecision = "approve" | "reject";
-
-type ProjectionDetails = {
-  sourceRevisionId: string;
-  targetKind: ProjectionTargetKind;
-  targetAudienceId: string;
-  purpose: string;
-  preview: string;
-  reviewState: string;
-  expiresAt: string;
-  createdAt: string;
-  reviewedAt: string | null;
-  revokedAt: string | null;
-  supersedesProjectionId: string | null;
-};
-
-type Projection = ProjectionDetails & {
-  projectionId: string;
-};
-
-type ProjectionPreview = ProjectionDetails & {
-  previewId: string;
-};
-
-type PostboxItem = {
-  postboxItemId: string;
-  sourceConversationId: string;
-  provenanceLabel: string;
-  contentPreview: string;
-  reviewState: string;
-  expiresAt: string;
-  createdAt: string;
-  reviewedAt: string | null;
-};
-
-type PostboxInspection = {
-  postboxItemId: string;
-  reviewContent: string;
-  expiresAt: string;
-};
-
-type SharingStatus = {
-  postboxMode: "off" | "review-required" | "unknown";
-  projections: Projection[];
-  postboxItems: PostboxItem[];
-};
-
-type SharingLoadState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ready"; status: SharingStatus }
-  | { kind: "error" };
-
-type ProjectionForm = {
-  sourceRevisionId: string;
-  targetKind: ProjectionTargetKind;
-  targetId: string;
-  purpose: string;
-  expiresAt: string;
-  supersedesProjectionId: string | null;
-};
-
-type ProjectionImpact = {
-  priorExposureCount: number;
-};
-
-type GatewayMethodHost = {
-  hello?: {
-    features?: { methods?: string[] } | null;
-  } | null;
-};
-
-const TARGET_KINDS: ReadonlyArray<{ value: ProjectionTargetKind; labelKey: string }> = [
-  { value: "conversation", labelKey: "memoryPage.sharing.targets.conversation" },
-  { value: "role", labelKey: "memoryPage.sharing.targets.role" },
-  { value: "agent-shared", labelKey: "memoryPage.sharing.targets.agentShared" },
-];
-
-const MAX_REDACTED_PREVIEW_LENGTH = 1_000;
-
-function emptyProjectionForm(): ProjectionForm {
-  return {
-    sourceRevisionId: "",
-    targetKind: "conversation",
-    targetId: "",
-    purpose: "",
-    expiresAt: "",
-    supersedesProjectionId: null,
-  };
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-/** Server-supplied previews are redacted, but cap their rendering independently. */
-function asRedactedText(value: unknown): string {
-  return typeof value === "string" ? value.slice(0, MAX_REDACTED_PREVIEW_LENGTH) : "";
-}
-
-function asOptionalString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function asTargetKind(value: unknown): ProjectionTargetKind | null {
-  return value === "conversation" || value === "role" || value === "agent-shared" ? value : null;
-}
-
-function parseProjectionDetails(value: unknown): ProjectionDetails | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const sourceRevisionId = asString(value.sourceRevisionId);
-  const targetKind = asTargetKind(value.targetKind);
-  const targetAudienceId = asString(value.targetAudienceId);
-  const purpose = asRedactedText(value.purpose);
-  const reviewState = asString(value.reviewState);
-  const expiresAt = asString(value.expiresAt);
-  const createdAt = asString(value.createdAt);
-  if (
-    !sourceRevisionId ||
-    !targetKind ||
-    !targetAudienceId ||
-    !reviewState ||
-    !expiresAt ||
-    !createdAt
-  ) {
-    return null;
-  }
-  return {
-    sourceRevisionId,
-    targetKind,
-    targetAudienceId,
-    purpose,
-    preview: asRedactedText(value.preview),
-    reviewState,
-    expiresAt,
-    createdAt,
-    reviewedAt: asOptionalString(value.reviewedAt),
-    revokedAt: asOptionalString(value.revokedAt),
-    supersedesProjectionId: asOptionalString(value.supersedesProjectionId),
-  };
-}
-
-function parseProjection(value: unknown): Projection | null {
-  const details = parseProjectionDetails(value);
-  const projectionId = isRecord(value) ? asString(value.projectionId) : null;
-  return details && projectionId ? { ...details, projectionId } : null;
-}
-
-function parseProjectionPreview(value: unknown): ProjectionPreview | null {
-  const details = parseProjectionDetails(value);
-  const previewId = isRecord(value) ? asString(value.previewId) : null;
-  return details && previewId ? { ...details, previewId } : null;
-}
-
-function parsePostboxItem(value: unknown): PostboxItem | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const postboxItemId = asString(value.postboxItemId);
-  const sourceConversationId = asString(value.sourceConversationId);
-  const provenanceLabel = asRedactedText(value.provenanceLabel);
-  const reviewState = asString(value.reviewState);
-  const expiresAt = asString(value.expiresAt);
-  const createdAt = asString(value.createdAt);
-  if (!postboxItemId || !sourceConversationId || !reviewState || !expiresAt || !createdAt) {
-    return null;
-  }
-  return {
-    postboxItemId,
-    sourceConversationId,
-    provenanceLabel,
-    contentPreview: asRedactedText(value.contentPreview),
-    reviewState,
-    expiresAt,
-    createdAt,
-    reviewedAt: asOptionalString(value.reviewedAt),
-  };
-}
-
-function parsePostboxInspection(value: unknown): PostboxInspection | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const postboxItemId = asString(value.postboxItemId);
-  const expiresAt = asString(value.expiresAt);
-  const reviewContent = typeof value.reviewContent === "string" ? value.reviewContent : null;
-  if (!postboxItemId || !expiresAt || reviewContent === null) {
-    return null;
-  }
-  return { postboxItemId, reviewContent, expiresAt };
-}
-
-function parsePostboxItems(value: unknown): PostboxItem[] | null {
-  if (Array.isArray(value)) {
-    return value.map(parsePostboxItem).filter((item): item is PostboxItem => item !== null);
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-  const items = value.postboxItems ?? value.items;
-  if (!Array.isArray(items)) {
-    return null;
-  }
-  return items.map(parsePostboxItem).filter((item): item is PostboxItem => item !== null);
-}
-
-function parseSharingStatus(value: unknown): SharingStatus | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const projections = Array.isArray(value.projections)
-    ? value.projections.map(parseProjection).filter((item): item is Projection => item !== null)
-    : [];
-  const postboxItems = parsePostboxItems(value) ?? [];
-  return {
-    postboxMode:
-      value.postboxMode === "off" || value.postboxMode === "review-required"
-        ? value.postboxMode
-        : "unknown",
-    projections,
-    postboxItems,
-  };
-}
-
-function parseImpact(value: unknown): ProjectionImpact {
-  if (!isRecord(value)) {
-    return { priorExposureCount: 0 };
-  }
-  const directCount = value.priorExposureCount ?? value.exposureCount ?? value.count;
-  if (typeof directCount === "number" && Number.isSafeInteger(directCount) && directCount >= 0) {
-    return { priorExposureCount: directCount };
-  }
-  if (Array.isArray(value.exposures)) {
-    return { priorExposureCount: value.exposures.length };
-  }
-  return { priorExposureCount: 0 };
-}
-
-function localDateTimeValue(iso: string): string {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) {
-    return "";
-  }
-  const date = new Date(ms);
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(ms - offsetMs).toISOString().slice(0, 16);
-}
-
-function futureIso(localDateTime: string): string | null {
-  const ms = Date.parse(localDateTime);
-  if (!Number.isFinite(ms) || ms <= Date.now()) {
-    return null;
-  }
-  return new Date(ms).toISOString();
-}
-
-function formatTimestamp(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return t("memoryPage.sharing.unknownTimestamp");
-  }
-  return new Intl.DateTimeFormat(i18n.getLocale(), {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(timestamp));
-}
-
-function targetLabel(kind: ProjectionTargetKind): string {
-  return t(TARGET_KINDS.find((target) => target.value === kind)?.labelKey ?? "common.unknown");
-}
-
-function reviewStateLabel(value: string): string {
-  switch (value) {
-    case "pending":
-      return t("memoryPage.sharing.reviewState.pending");
-    case "approved":
-      return t("memoryPage.sharing.reviewState.approved");
-    case "rejected":
-      return t("memoryPage.sharing.reviewState.rejected");
-    case "revoked":
-      return t("memoryPage.sharing.reviewState.revoked");
-    default:
-      return t("memoryPage.sharing.reviewState.unknown");
-  }
-}
-
-function postboxModeLabel(mode: SharingStatus["postboxMode"]): string {
-  switch (mode) {
-    case "off":
-      return t("memoryPage.sharing.postboxMode.off");
-    case "review-required":
-      return t("memoryPage.sharing.postboxMode.reviewRequired");
-    default:
-      return t("memoryPage.sharing.postboxMode.unknown");
-  }
-}
-
-function statusKind(state: string): "ok" | "warn" | "muted" {
-  if (state === "approved") {
-    return "ok";
-  }
-  if (state === "pending") {
-    return "warn";
-  }
-  return "muted";
-}
-
-/** The sharing UI stays hidden until the Gateway explicitly advertises every review operation. */
-export function hasMemorySharingGatewayMethods(host: GatewayMethodHost): boolean {
-  return MEMORY_SHARING_GATEWAY_METHODS.every(
-    (method) => isGatewayMethodAdvertised(host, method) === true,
-  );
-}
+import {
+  asTargetKind,
+  emptyProjectionForm,
+  futureIso,
+  localDateTimeValue,
+  parseImpact,
+  parsePostboxInspection,
+  parsePostboxItems,
+  parseProjectionPreview,
+  parseSharingStatus,
+  type PostboxInspection,
+  type PostboxReviewDecision,
+  type Projection,
+  type ProjectionForm,
+  type ProjectionImpact,
+  type ProjectionPreview,
+  type ProjectionReviewDecision,
+  type SharingLoadState,
+} from "./memory-sharing-protocol.ts";
+import { renderMemorySharing } from "./memory-sharing-view.ts";
 
 class MemorySharingElement extends OpenClawLightDomElement {
   @property({ attribute: false }) client: GatewayBrowserClient | null = null;
@@ -421,8 +101,8 @@ class MemorySharingElement extends OpenClawLightDomElement {
     this.loadState = { kind: "loading" };
     try {
       const [statusResponse, postboxResponse] = await Promise.all([
-        request.client.request<unknown>("memory.sharing.status", { agentId: request.agentId }),
-        request.client.request<unknown>("memory.sharing.postbox.list", {
+        request.client.request("memory.sharing.status", { agentId: request.agentId }),
+        request.client.request("memory.sharing.postbox.list", {
           agentId: request.agentId,
         }),
       ]);
@@ -449,7 +129,7 @@ class MemorySharingElement extends OpenClawLightDomElement {
     }
   }
 
-  private async request(method: string, payload: Record<string, unknown>): Promise<unknown | null> {
+  private async request(method: string, payload: Record<string, unknown>): Promise<unknown> {
     if (!this.canUse() || this.busyOperation) {
       return null;
     }
@@ -457,7 +137,7 @@ class MemorySharingElement extends OpenClawLightDomElement {
     this.busyOperation = method;
     this.operationError = null;
     try {
-      const response = await request.client.request<unknown>(method, payload);
+      const response = await request.client.request(method, payload);
       return this.isCurrentRequest(request) ? response : null;
     } catch {
       if (this.isCurrentRequest(request)) {
@@ -494,7 +174,7 @@ class MemorySharingElement extends OpenClawLightDomElement {
   private previewPayload(): {
     agentId: string;
     sourceRevisionId: string;
-    targetKind: ProjectionTargetKind;
+    targetKind: ProjectionForm["targetKind"];
     targetId: string;
     purpose: string;
     expiresAt: string;
@@ -730,544 +410,54 @@ class MemorySharingElement extends OpenClawLightDomElement {
     }
   }
 
-  private renderStatus() {
-    const state = this.loadState;
-    const ready = state.kind === "ready" ? state.status : null;
-    return renderSettingsSection(
-      {
-        title: t("memoryPage.sharing.status.title"),
-        description: t("memoryPage.sharing.status.description"),
-        actions: html`<button
-          type="button"
-          class="btn btn--sm"
-          ?disabled=${this.busyOperation !== null || state.kind === "loading"}
-          @click=${() => void this.load()}
-        >
-          ${t("memoryPage.sharing.refresh")}
-        </button>`,
-      },
-      state.kind === "loading"
-        ? renderSettingsRow({
-            title: t("memoryPage.sharing.status.loading"),
-            control: renderSettingsStatus({ kind: "muted", label: t("common.loading") }),
-          })
-        : state.kind === "error"
-          ? renderSettingsRow({
-              title: t("memoryPage.sharing.status.unavailable"),
-              description: t("memoryPage.sharing.status.unavailableDescription"),
-              control: renderSettingsStatus({ kind: "danger", label: t("common.failed") }),
-            })
-          : html`
-              ${renderSettingsRow({
-                title: t("memoryPage.sharing.status.agent"),
-                control: renderSettingsValue(this.agentId ?? t("common.unknown"), { mono: true }),
-              })}
-              ${ready
-                ? html`
-                    ${renderSettingsRow({
-                      title: t("memoryPage.sharing.status.postboxMode"),
-                      control: renderSettingsStatus({
-                        kind: ready.postboxMode === "review-required" ? "warn" : "muted",
-                        label: postboxModeLabel(ready.postboxMode),
-                      }),
-                    })}
-                    ${renderSettingsRow({
-                      title: t("memoryPage.sharing.status.projectionCount"),
-                      control: renderSettingsValue(String(ready.projections.length)),
-                    })}
-                    ${renderSettingsRow({
-                      title: t("memoryPage.sharing.status.postboxCount"),
-                      control: renderSettingsValue(String(ready.postboxItems.length)),
-                    })}
-                  `
-                : nothing}
-            `,
-    );
-  }
-
-  private renderProjectionForm() {
-    const refreshing = this.form.supersedesProjectionId !== null;
-    const form = this.form;
-    return renderSettingsSection(
-      {
-        title: refreshing
-          ? t("memoryPage.sharing.projection.refreshTitle")
-          : t("memoryPage.sharing.projection.createTitle"),
-        description: refreshing
-          ? t("memoryPage.sharing.projection.refreshDescription")
-          : t("memoryPage.sharing.projection.createDescription"),
-        actions: refreshing
-          ? html`<button type="button" class="btn btn--sm" @click=${() => this.cancelRefresh()}>
-              ${t("memoryPage.sharing.projection.cancelRefresh")}
-            </button>`
-          : undefined,
-      },
-      html`
-        <form
-          class="memory-sharing__form"
-          @submit=${(event: SubmitEvent) => {
-            event.preventDefault();
-            void this.requestPreview();
-          }}
-        >
-          ${renderSettingsRow({
-            title: t("memoryPage.sharing.projection.sourceRevision"),
-            description: t("memoryPage.sharing.projection.sourceRevisionDescription"),
-            stacked: true,
-            control: html`<input
-              id="memory-sharing-source-revision"
-              class="settings-input"
-              aria-label=${t("memoryPage.sharing.projection.sourceRevision")}
-              autocomplete="off"
-              required
-              .value=${form.sourceRevisionId}
-              @input=${(event: Event) =>
-                this.updateForm("sourceRevisionId", (event.target as HTMLInputElement).value)}
-            />`,
-          })}
-          ${renderSettingsRow({
-            title: t("memoryPage.sharing.projection.targetKind"),
-            description: t("memoryPage.sharing.projection.targetKindDescription"),
-            stacked: true,
-            control: html`<select
-              id="memory-sharing-target-kind"
-              class="settings-select"
-              aria-label=${t("memoryPage.sharing.projection.targetKind")}
-              .value=${form.targetKind}
-              @change=${(event: Event) =>
-                this.updateTargetKind((event.target as HTMLSelectElement).value)}
-            >
-              ${TARGET_KINDS.map(
-                (target) => html`<option value=${target.value}>${t(target.labelKey)}</option>`,
-              )}
-            </select>`,
-          })}
-          ${renderSettingsRow({
-            title: t("memoryPage.sharing.projection.targetId"),
-            description:
-              form.targetKind === "agent-shared"
-                ? t("memoryPage.sharing.projection.agentSharedTargetDescription")
-                : t("memoryPage.sharing.projection.targetIdDescription"),
-            stacked: true,
-            control: html`<input
-              id="memory-sharing-target-id"
-              class="settings-input"
-              aria-label=${t("memoryPage.sharing.projection.targetId")}
-              autocomplete="off"
-              required
-              ?disabled=${form.targetKind === "agent-shared"}
-              .value=${form.targetId}
-              @input=${(event: Event) =>
-                this.updateForm("targetId", (event.target as HTMLInputElement).value)}
-            />`,
-          })}
-          ${renderSettingsRow({
-            title: t("memoryPage.sharing.projection.purpose"),
-            stacked: true,
-            control: html`<textarea
-              id="memory-sharing-purpose"
-              class="settings-input"
-              aria-label=${t("memoryPage.sharing.projection.purpose")}
-              required
-              .value=${form.purpose}
-              @input=${(event: Event) =>
-                this.updateForm("purpose", (event.target as HTMLTextAreaElement).value)}
-            ></textarea>`,
-          })}
-          ${renderSettingsRow({
-            title: t("memoryPage.sharing.projection.expiry"),
-            description: t("memoryPage.sharing.projection.expiryDescription"),
-            stacked: true,
-            control: html`<input
-              id="memory-sharing-expiry"
-              class="settings-input"
-              type="datetime-local"
-              aria-label=${t("memoryPage.sharing.projection.expiry")}
-              required
-              .value=${form.expiresAt}
-              @input=${(event: Event) =>
-                this.updateForm("expiresAt", (event.target as HTMLInputElement).value)}
-            />`,
-          })}
-          <div class="settings-row settings-row--actions">
-            <div class="settings-row__control">
-              <button type="submit" class="btn btn--sm" ?disabled=${this.busyOperation !== null}>
-                ${t("memoryPage.sharing.projection.preview")}
-              </button>
-            </div>
-          </div>
-        </form>
-      `,
-    );
-  }
-
-  private renderPreview() {
-    const preview = this.preview;
-    if (!preview) {
-      return nothing;
-    }
-    const refreshing = this.form.supersedesProjectionId !== null;
-    return renderSettingsSection(
-      {
-        title: t("memoryPage.sharing.preview.title"),
-        description: t("memoryPage.sharing.preview.description"),
-      },
-      html`
-        ${renderSettingsRow({
-          title: t("memoryPage.sharing.preview.target"),
-          description: `${targetLabel(preview.targetKind)} · ${preview.targetAudienceId}`,
-        })}
-        ${renderSettingsRow({
-          title: t("memoryPage.sharing.preview.expiry"),
-          control: renderSettingsValue(formatTimestamp(preview.expiresAt)),
-        })}
-        ${renderSettingsRow({
-          title: t("memoryPage.sharing.preview.redactedPreview"),
-          stacked: true,
-          control: html`<p class="memory-sharing__redacted-preview">${preview.preview}</p>`,
-        })}
-        <div class="settings-row settings-row--actions">
-          <div class="settings-row__control">
-            <button
-              type="button"
-              class="btn btn--sm"
-              ?disabled=${this.busyOperation !== null}
-              @click=${() => void this.finalizePreview()}
-            >
-              ${refreshing
-                ? t("memoryPage.sharing.preview.refreshForReview")
-                : t("memoryPage.sharing.preview.createForReview")}
-            </button>
-          </div>
-        </div>
-      `,
-    );
-  }
-
-  private renderProjectionActions(projection: Projection): TemplateResult {
-    const pendingRevoke = this.revokeCandidateId === projection.projectionId;
-    const impact = this.impacts.get(projection.projectionId);
-    const rejectReason = this.projectionRejectReasons.get(projection.projectionId) ?? "";
-    return html`
-      <div class="memory-sharing__actions">
-        ${projection.reviewState === "pending"
-          ? html`
-              <button
-                type="button"
-                class="btn btn--sm"
-                ?disabled=${this.busyOperation !== null}
-                @click=${() => void this.reviewProjection(projection.projectionId, "approve")}
-              >
-                ${t("memoryPage.sharing.review.approve")}
-              </button>
-              <label
-                class="memory-sharing__reason"
-                for="memory-sharing-projection-reason-${projection.projectionId}"
-              >
-                <span>${t("memoryPage.sharing.review.reason")}</span>
-                <textarea
-                  id="memory-sharing-projection-reason-${projection.projectionId}"
-                  class="settings-input"
-                  aria-label=${t("memoryPage.sharing.review.reason")}
-                  .value=${rejectReason}
-                  @input=${(event: Event) =>
-                    this.updateProjectionRejectReason(
-                      projection.projectionId,
-                      (event.target as HTMLTextAreaElement).value,
-                    )}
-                ></textarea>
-              </label>
-              <button
-                type="button"
-                class="btn btn--sm"
-                ?disabled=${this.busyOperation !== null || !rejectReason.trim()}
-                @click=${() => void this.reviewProjection(projection.projectionId, "reject")}
-              >
-                ${t("memoryPage.sharing.review.reject")}
-              </button>
-            `
-          : nothing}
-        ${projection.reviewState === "approved"
-          ? html`<button
-              type="button"
-              class="btn btn--sm"
-              ?disabled=${this.busyOperation !== null}
-              @click=${() => this.prepareRefresh(projection)}
-            >
-              ${t("memoryPage.sharing.projection.refresh")}
-            </button>`
-          : nothing}
-        <button
-          type="button"
-          class="btn btn--sm"
-          ?disabled=${this.busyOperation !== null}
-          @click=${() => void this.loadImpact(projection.projectionId)}
-        >
-          ${t("memoryPage.sharing.projection.impact")}
-        </button>
-        ${projection.reviewState === "approved"
-          ? pendingRevoke
-            ? html`
-                <button
-                  type="button"
-                  class="btn btn--sm btn--danger"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() => void this.revokeProjection(projection.projectionId)}
-                >
-                  ${t("memoryPage.sharing.projection.confirmRevoke")}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() => (this.revokeCandidateId = null)}
-                >
-                  ${t("common.cancel")}
-                </button>
-              `
-            : html`<button
-                type="button"
-                class="btn btn--sm btn--danger"
-                ?disabled=${this.busyOperation !== null}
-                @click=${() => (this.revokeCandidateId = projection.projectionId)}
-              >
-                ${t("memoryPage.sharing.projection.revoke")}
-              </button>`
-          : nothing}
-      </div>
-      ${impact
-        ? html`<p class="memory-sharing__impact" role="status">
-            ${t("memoryPage.sharing.projection.priorExposures", {
-              count: String(impact.priorExposureCount),
-            })}
-          </p>`
-        : nothing}
-    `;
-  }
-
-  private renderProjections() {
-    const projections = this.loadState.kind === "ready" ? this.loadState.status.projections : [];
-    return renderSettingsSection(
-      {
-        title: t("memoryPage.sharing.projections.title"),
-        description: t("memoryPage.sharing.projections.description"),
-        count: projections.length,
-      },
-      projections.length === 0
-        ? renderSettingsRow({ title: t("memoryPage.sharing.projections.empty") })
-        : projections.map(
-            (projection) => html`
-              <article class="memory-sharing__item">
-                ${renderSettingsRow({
-                  title: projection.purpose || t("memoryPage.sharing.projection.untitled"),
-                  description: `${targetLabel(projection.targetKind)} · ${projection.targetAudienceId}`,
-                  control: renderSettingsStatus({
-                    kind: statusKind(projection.reviewState),
-                    label: reviewStateLabel(projection.reviewState),
-                  }),
-                })}
-                ${renderSettingsRow({
-                  title: t("memoryPage.sharing.preview.redactedPreview"),
-                  description: html`<span class="memory-sharing__redacted-preview"
-                    >${projection.preview}</span
-                  >`,
-                })}
-                ${renderSettingsRow({
-                  title: t("memoryPage.sharing.projection.expires"),
-                  control: renderSettingsValue(formatTimestamp(projection.expiresAt)),
-                })}
-                <div class="settings-row settings-row--actions">
-                  <div class="settings-row__control">
-                    ${this.renderProjectionActions(projection)}
-                  </div>
-                </div>
-              </article>
-            `,
-          ),
-    );
-  }
-
-  private renderPostboxActions(item: PostboxItem): TemplateResult {
-    const pendingPurge = this.purgeCandidateId === item.postboxItemId;
-    const editedContent = this.postboxEdits.get(item.postboxItemId) ?? "";
-    const inspection = this.postboxInspections.get(item.postboxItemId);
-    const rejectReason = this.postboxRejectReasons.get(item.postboxItemId) ?? "";
-    return html`
-      ${item.reviewState === "pending"
-        ? html`
-            ${inspection
-              ? renderSettingsRow({
-                  title: t("memoryPage.sharing.postbox.inspection"),
-                  description: t("memoryPage.sharing.postbox.inspectionDescription"),
-                  stacked: true,
-                  control: html`<textarea
-                    id="memory-sharing-postbox-inspection-${item.postboxItemId}"
-                    class="settings-input"
-                    aria-label=${t("memoryPage.sharing.postbox.inspection")}
-                    readonly
-                    .value=${inspection.reviewContent}
-                  ></textarea>`,
-                })
-              : nothing}
-            <div class="settings-row settings-row--actions">
-              <div class="settings-row__control memory-sharing__actions">
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() =>
-                    inspection
-                      ? this.clearPostboxInspection(item.postboxItemId)
-                      : void this.inspectPostbox(item.postboxItemId)}
-                >
-                  ${inspection
-                    ? t("memoryPage.sharing.postbox.hideInspection")
-                    : t("memoryPage.sharing.postbox.inspect")}
-                </button>
-              </div>
-            </div>
-            ${renderSettingsRow({
-              title: t("memoryPage.sharing.postbox.replacement"),
-              description: t("memoryPage.sharing.postbox.replacementDescription"),
-              stacked: true,
-              control: html`<textarea
-                class="settings-input"
-                .value=${editedContent}
-                @input=${(event: Event) =>
-                  this.updatePostboxEdit(
-                    item.postboxItemId,
-                    (event.target as HTMLTextAreaElement).value,
-                  )}
-              ></textarea>`,
-            })}
-            <div class="settings-row settings-row--actions">
-              <div class="settings-row__control memory-sharing__actions">
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() => void this.reviewPostbox(item.postboxItemId, "approve")}
-                >
-                  ${t("memoryPage.sharing.review.approve")}
-                </button>
-                <label
-                  class="memory-sharing__reason"
-                  for="memory-sharing-postbox-reason-${item.postboxItemId}"
-                >
-                  <span>${t("memoryPage.sharing.review.reason")}</span>
-                  <textarea
-                    id="memory-sharing-postbox-reason-${item.postboxItemId}"
-                    class="settings-input"
-                    aria-label=${t("memoryPage.sharing.review.reason")}
-                    .value=${rejectReason}
-                    @input=${(event: Event) =>
-                      this.updatePostboxRejectReason(
-                        item.postboxItemId,
-                        (event.target as HTMLTextAreaElement).value,
-                      )}
-                  ></textarea>
-                </label>
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  ?disabled=${this.busyOperation !== null || !rejectReason.trim()}
-                  @click=${() => void this.reviewPostbox(item.postboxItemId, "reject")}
-                >
-                  ${t("memoryPage.sharing.review.reject")}
-                </button>
-              </div>
-            </div>
-          `
-        : nothing}
-      <div class="settings-row settings-row--actions">
-        <div class="settings-row__control memory-sharing__actions">
-          ${pendingPurge
-            ? html`
-                <button
-                  type="button"
-                  class="btn btn--sm btn--danger"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() => void this.purgePostbox(item.postboxItemId)}
-                >
-                  ${t("memoryPage.sharing.postbox.confirmPurge")}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  ?disabled=${this.busyOperation !== null}
-                  @click=${() => (this.purgeCandidateId = null)}
-                >
-                  ${t("common.cancel")}
-                </button>
-              `
-            : html`<button
-                type="button"
-                class="btn btn--sm btn--danger"
-                ?disabled=${this.busyOperation !== null}
-                @click=${() => (this.purgeCandidateId = item.postboxItemId)}
-              >
-                ${t("memoryPage.sharing.postbox.purge")}
-              </button>`}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderPostbox() {
-    const items = this.loadState.kind === "ready" ? this.loadState.status.postboxItems : [];
-    return renderSettingsSection(
-      {
-        title: t("memoryPage.sharing.postbox.title"),
-        description: t("memoryPage.sharing.postbox.description"),
-        count: items.length,
-      },
-      items.length === 0
-        ? renderSettingsRow({ title: t("memoryPage.sharing.postbox.empty") })
-        : items.map(
-            (item) => html`
-              <article class="memory-sharing__item">
-                ${renderSettingsRow({
-                  title: item.provenanceLabel || t("memoryPage.sharing.postbox.unknownProvenance"),
-                  description: t("memoryPage.sharing.postbox.provenanceOnly"),
-                  control: renderSettingsStatus({
-                    kind: statusKind(item.reviewState),
-                    label: reviewStateLabel(item.reviewState),
-                  }),
-                })}
-                ${renderSettingsRow({
-                  title: t("memoryPage.sharing.postbox.redactedPreview"),
-                  description: html`<span class="memory-sharing__redacted-preview"
-                    >${item.contentPreview}</span
-                  >`,
-                })}
-                ${renderSettingsRow({
-                  title: t("memoryPage.sharing.postbox.expires"),
-                  control: renderSettingsValue(formatTimestamp(item.expiresAt)),
-                })}
-                ${this.renderPostboxActions(item)}
-              </article>
-            `,
-          ),
-    );
-  }
-
   override render() {
     // Loss of sharing write access redacts the whole surface immediately,
     // including rows fetched before the Gateway sent the new authorization.
     if (!this.canUse()) {
       return nothing;
     }
-    return html`
-      <section class="settings-page memory-sharing" aria-label=${t("memoryPage.sharing.title")}>
-        <h2 class="memory-sharing__title">${t("memoryPage.sharing.title")}</h2>
-        <p class="settings-page__intro">${t("memoryPage.sharing.intro")}</p>
-        ${this.renderStatus()} ${this.renderProjectionForm()} ${this.renderPreview()}
-        ${this.operationError
-          ? html`<p class="memory-sharing__error" role="alert">${this.operationError}</p>`
-          : nothing}
-        ${this.renderProjections()} ${this.renderPostbox()}
-      </section>
-    `;
+    return renderMemorySharing({
+      agentId: this.agentId,
+      loadState: this.loadState,
+      form: this.form,
+      preview: this.preview,
+      busyOperation: this.busyOperation,
+      operationError: this.operationError,
+      impacts: this.impacts,
+      postboxEdits: this.postboxEdits,
+      postboxInspections: this.postboxInspections,
+      projectionRejectReasons: this.projectionRejectReasons,
+      postboxRejectReasons: this.postboxRejectReasons,
+      revokeCandidateId: this.revokeCandidateId,
+      purgeCandidateId: this.purgeCandidateId,
+      load: () => this.load(),
+      updateForm: <K extends keyof ProjectionForm>(key: K, value: ProjectionForm[K]) =>
+        this.updateForm(key, value),
+      updateTargetKind: (value) => this.updateTargetKind(value),
+      requestPreview: () => this.requestPreview(),
+      finalizePreview: () => this.finalizePreview(),
+      updateProjectionRejectReason: (projectionId, reason) =>
+        this.updateProjectionRejectReason(projectionId, reason),
+      reviewProjection: (projectionId, decision) => this.reviewProjection(projectionId, decision),
+      prepareRefresh: (projection) => this.prepareRefresh(projection),
+      cancelRefresh: () => this.cancelRefresh(),
+      revokeProjection: (projectionId) => this.revokeProjection(projectionId),
+      loadImpact: (projectionId) => this.loadImpact(projectionId),
+      setRevokeCandidate: (projectionId) => {
+        this.revokeCandidateId = projectionId;
+      },
+      updatePostboxEdit: (postboxItemId, editedContent) =>
+        this.updatePostboxEdit(postboxItemId, editedContent),
+      updatePostboxRejectReason: (postboxItemId, reason) =>
+        this.updatePostboxRejectReason(postboxItemId, reason),
+      clearPostboxInspection: (postboxItemId) => this.clearPostboxInspection(postboxItemId),
+      inspectPostbox: (postboxItemId) => this.inspectPostbox(postboxItemId),
+      reviewPostbox: (postboxItemId, decision) => this.reviewPostbox(postboxItemId, decision),
+      purgePostbox: (postboxItemId) => this.purgePostbox(postboxItemId),
+      setPurgeCandidate: (postboxItemId) => {
+        this.purgeCandidateId = postboxItemId;
+      },
+    });
   }
 }
 

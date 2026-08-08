@@ -12,7 +12,7 @@ import {
   setBuiltinScopedMemoryRevisionLifecycle,
 } from "../../test-api.js";
 import { resolveScopedMemoryArtifactBase } from "./scoped-memory-db.js";
-import { resolveBuiltinScopedMemoryArtifactPath } from "./scoped-memory-resources.js";
+import { resolveBuiltinScopedMemoryArtifactPath } from "./scoped-memory-resource-artifacts.js";
 
 describe("builtin scoped memory store", () => {
   let stateDir = "";
@@ -175,6 +175,23 @@ describe("builtin scoped memory store", () => {
       policy_revision_id: racedPolicy.policyRevisionId,
       source_policy_set_id: racedPolicy.sourcePolicySetId,
     });
+    expect(
+      openOpenClawAgentDatabase({ agentId: "main" })
+        .db.prepare(
+          `SELECT stable_policy_id, captured_revision_id, expected_active_revision_id,
+                  expected_revocation_epoch
+             FROM memory_revision_policy_requirements
+            WHERE revision_id = ?`,
+        )
+        .all(second.revisionId),
+    ).toEqual([
+      {
+        stable_policy_id: store.policyId,
+        captured_revision_id: racedPolicy.policyRevisionId,
+        expected_active_revision_id: racedPolicy.policyRevisionId,
+        expected_revocation_epoch: racedPolicy.policyRevocationEpoch,
+      },
+    ]);
   });
 
   it("never writes scoped resources into legacy index tables", () => {

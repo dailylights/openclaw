@@ -1145,6 +1145,45 @@ describe("openclaw state database", () => {
     }
   });
 
+  it("opens current state without uninstalled lazy memory tables", () => {
+    const stateDir = createTempStateDir();
+    const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
+    const databasePath = materializeCurrentStateDatabase(stateDir);
+    const { DatabaseSync } = requireNodeSqlite();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec(`
+        DROP TABLE memory_identity_bindings;
+        DROP TABLE memory_principals;
+        DROP TABLE memory_access_audit;
+      `);
+    } finally {
+      database.close();
+    }
+
+    const reopened = openOpenClawStateDatabase(options);
+    expect(
+      reopened.db
+        .prepare(
+          `SELECT name
+           FROM sqlite_schema
+           WHERE name IN (
+             'memory_access_audit',
+             'memory_identity_bindings',
+             'memory_principals',
+             'idx_memory_access_audit_agent_time',
+             'idx_memory_identity_bindings_lookup',
+             'idx_memory_identity_bindings_principal',
+             'idx_memory_principals_merge_head',
+             'idx_memory_principals_opaque_subject',
+             'idx_memory_principals_user_profile'
+           )
+           ORDER BY name`,
+        )
+        .all(),
+    ).toEqual([]);
+  });
+
   it("drops unreleased transient verification history on open", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };

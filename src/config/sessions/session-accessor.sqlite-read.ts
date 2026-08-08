@@ -25,12 +25,12 @@ import {
   resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
   readAuthorizedTranscriptEventSeqs,
   readTranscriptMemoryPolicyExportManifestFromDatabase,
   type TranscriptMemoryPolicyExportManifest,
 } from "./session-transcript-memory-policy.js";
+import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 
 function filterAuthorizedTranscriptRows<Row extends { seq: number }>(
   database: OpenClawAgentDatabase,

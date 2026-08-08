@@ -39,6 +39,8 @@ export function createToolFsPolicy(
     case "memory-blocked":
       return { kind: params.kind, workspaceOnly: true, reason: params.reason };
   }
+  // Runtime extension inputs can bypass the discriminated TypeScript boundary; deny unknown modes.
+  return { kind: "memory-blocked", workspaceOnly: true, reason: "memory-unavailable" };
 }
 
 export function resolveToolFsConfig(params: { cfg?: OpenClawConfig; agentId?: string }): {

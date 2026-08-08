@@ -49,7 +49,7 @@ import {
   type MemoryEngineSelection,
   type MemoryTab,
 } from "./memory-schema.ts";
-import { hasMemorySharingGatewayMethods } from "./memory-sharing.ts";
+import { renderMemorySharingHost } from "./memory-sharing-host.ts";
 import {
   buildMemoryAddonRows,
   buildMemoryEngineOptions,
@@ -713,15 +713,7 @@ class MemorySettingsPage extends OpenClawLightDomElement {
       dreamingSettings: activeTab === "settings" ? this.renderDreamingControls() : html``,
       sharing:
         activeTab === "settings"
-          ? html`
-              <openclaw-memory-sharing
-                .client=${this.context.gateway.snapshot.client}
-                .connected=${this.context.gateway.snapshot.phase === "connected"}
-                .canWrite=${readGatewayOperatorAccess(this.context.gateway.snapshot).canWrite}
-                .methodsAvailable=${hasMemorySharingGatewayMethods(this.context.gateway.snapshot)}
-                .agentId=${agentId}
-              ></openclaw-memory-sharing>
-            `
+          ? renderMemorySharingHost(this.context.gateway.snapshot, agentId)
           : html``,
     });
   }

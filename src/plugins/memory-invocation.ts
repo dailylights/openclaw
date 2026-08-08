@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core";
 import { readCurrentSessionMemorySubjectAuthority } from "../config/sessions/session-memory-subject-access.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   AudienceRef,
-  AuthorizedMemoryPlan,
   MemoryAccessContext,
   MemoryActorEvidence,
   MemoryOperation,
@@ -25,6 +22,11 @@ import {
 } from "./memory-access-context.js";
 import { isMemoryIsolationCutoverAgent } from "./memory-cutover.js";
 import { listMemoryEgressCapabilityIds } from "./memory-egress-registry.js";
+import {
+  createMemoryVirtualFilesystemView,
+  isMemoryVirtualRootPath,
+  normalizeMemoryVirtualPath,
+} from "./memory-invocation-filesystem.js";
 import {
   advanceMemoryRunExposure,
   createMemoryDisplayHandleRegistry,
@@ -79,79 +81,6 @@ type AuthorizedMemoryToolSearchResult = Readonly<{
 }>;
 
 const invocationStateByToken = new WeakMap<MemoryInvocationToken, MemoryInvocationState>();
-
-const MEMORY_VIRTUAL_ROOTS = new Set([
-  "private",
-  "channel",
-  "shared",
-  "projections",
-  "postbox-review",
-]);
-
-type MemoryVirtualRoot = "private" | "channel" | "shared" | "projections" | "postbox-review";
-
-function normalizeVirtualPath(value: string): string | undefined {
-  const normalized = value.normalize("NFKC").replaceAll("\\", "/");
-  if (normalized !== value || normalized.startsWith("/") || normalized.includes("\0")) {
-    return undefined;
-  }
-  const parts = normalized.split("/");
-  if (
-    parts.length !== 3 ||
-    parts.some((part) => !part || part === "." || part === "..") ||
-    !MEMORY_VIRTUAL_ROOTS.has(parts[0] ?? "")
-  ) {
-    return undefined;
-  }
-  const [root, mountHandle, fileName] = parts;
-  if (
-    !root ||
-    !mountHandle ||
-    !fileName ||
-    !/^mm1_[A-Za-z0-9_-]{24,}$/u.test(mountHandle) ||
-    !/^mrh1_[A-Za-z0-9_-]{24,}\.md$/u.test(fileName)
-  ) {
-    return undefined;
-  }
-  return normalized;
-}
-
-function isMemoryVirtualRootPath(value: string): boolean {
-  const normalized = value.normalize("NFKC").replaceAll("\\", "/");
-  const root = normalized.split("/", 1)[0]?.toLowerCase();
-  return typeof root === "string" && MEMORY_VIRTUAL_ROOTS.has(root);
-}
-
-async function createMemoryVirtualFilesystemView(params: {
-  context: MemoryAccessContext;
-  plan: AuthorizedMemoryPlan;
-}): Promise<MemoryVirtualFilesystemView> {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-view-"));
-  try {
-    const roots = await Promise.all(
-      params.plan.mounts.map(async (mount) => {
-        const virtualRoot = mount.virtualRoot as MemoryVirtualRoot;
-        const sourcePath = path.join(rootDir, virtualRoot, mount.mountHandle);
-        await fs.mkdir(sourcePath, { recursive: true, mode: 0o500 });
-        await fs.chmod(sourcePath, 0o500);
-        return Object.freeze({ virtualRoot, mountHandle: mount.mountHandle, sourcePath });
-      }),
-    );
-    await fs.chmod(rootDir, 0o700);
-    return Object.freeze({
-      viewId: hashMemoryRevision("mvv1", {
-        contextFingerprint: params.context.contextFingerprint,
-        planId: params.plan.planId,
-        mounts: roots.map((root) => `${root.virtualRoot}\0${root.mountHandle}`).toSorted(),
-      }),
-      rootDir,
-      roots: Object.freeze(roots),
-    });
-  } catch (error) {
-    await fs.rm(rootDir, { recursive: true, force: true });
-    throw error;
-  }
-}
 
 function buildAuthorityFacts(params: {
   agentId: string;
@@ -640,7 +569,7 @@ export async function readVirtualMemoryFilesystemPath(params: {
   offset?: number;
   limit?: number;
 }): Promise<MemoryReadResult | MemoryInvocationUnavailable> {
-  const normalizedPath = normalizeVirtualPath(params.path);
+  const normalizedPath = normalizeMemoryVirtualPath(params.path);
   if (!normalizedPath) {
     return MEMORY_INVOCATION_UNAVAILABLE;
   }

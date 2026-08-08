@@ -36,7 +36,7 @@ describe("compaction memory policy hook", () => {
       .run("compaction-policy-cutover", "test", "source", "plan");
 
     let handler:
-      | ((event: unknown, ctx: { sessionManager: unknown }) => Promise<unknown> | unknown)
+      | ((event: unknown, ctx: { sessionManager: unknown }) => Promise<unknown> | void)
       | undefined;
     compactionMemoryPolicyExtension({
       on: (_event: string, registered: typeof handler) => {

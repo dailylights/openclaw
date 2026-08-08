@@ -224,8 +224,9 @@ function canonicalStateSchemaForRuntime(options: {
     eagerSchema = `${eagerSchema.slice(0, start)}${eagerSchema.slice(end + endMarker.length)}`;
   }
   for (const indexName of omittedIndexes) {
-    const startMarker = `CREATE INDEX IF NOT EXISTS ${indexName}`;
-    const start = eagerSchema.indexOf(startMarker);
+    const ordinaryStart = eagerSchema.indexOf(`CREATE INDEX IF NOT EXISTS ${indexName}`);
+    const uniqueStart = eagerSchema.indexOf(`CREATE UNIQUE INDEX IF NOT EXISTS ${indexName}`);
+    const start = ordinaryStart >= 0 ? ordinaryStart : uniqueStart;
     const end = start >= 0 ? eagerSchema.indexOf(";", start) : -1;
     if (start < 0 || end < 0) {
       throw new Error(`lazy additive state schema index is missing for ${indexName}`);

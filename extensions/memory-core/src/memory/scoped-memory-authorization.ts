@@ -25,7 +25,7 @@ import {
   evaluateScopedMemoryStorePolicy,
   SCOPED_MEMORY_OPERATION_REQUIREMENTS,
 } from "./scoped-memory-policy.js";
-import { resolveBuiltinScopedMemoryArtifactPath } from "./scoped-memory-resources.js";
+import { resolveBuiltinScopedMemoryArtifactPath } from "./scoped-memory-resource-artifacts.js";
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -50,6 +50,8 @@ function resolveScopedMemoryVirtualRoot(
       return "projections";
     case "internal":
       return "postbox-review";
+    default:
+      throw new Error("scoped-memory store scope is unsupported");
   }
 }
 

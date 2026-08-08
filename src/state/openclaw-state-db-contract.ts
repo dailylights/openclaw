@@ -25,6 +25,7 @@ export const LAZY_ADDITIVE_STATE_TABLES = [
 ] as const;
 export const LAZY_ADDITIVE_STATE_INDEXES = [
   ...FIRST_USE_STATE_INDEXES,
+  "idx_memory_access_audit_agent_time",
   "idx_memory_identity_bindings_lookup",
   "idx_memory_identity_bindings_principal",
   "idx_memory_principals_merge_head",

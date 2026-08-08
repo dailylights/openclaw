@@ -12,14 +12,14 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import {
-  createScopedMemorySharingService,
-  type ScopedMemorySharingPostboxInspection,
-  type ScopedMemorySharingPostboxItem,
-  type ScopedMemorySharingProjection,
-  type ScopedMemorySharingService,
-  type ScopedMemorySharingStatus,
-} from "./scoped-memory-sharing.js";
+import type {
+  ScopedMemorySharingPostboxInspection,
+  ScopedMemorySharingPostboxItem,
+  ScopedMemorySharingProjection,
+  ScopedMemorySharingStatus,
+} from "./scoped-memory-sharing-contracts.js";
+import { createScopedMemorySharingService } from "./scoped-memory-sharing.js";
+import type { ScopedMemorySharingService } from "./scoped-memory-sharing.js";
 
 const MEMORY_SHARING_GATEWAY_METHODS = {
   status: "memory.sharing.status",

@@ -1,6 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
@@ -10,23 +8,22 @@ import {
   runSqliteImmediateTransactionSync,
 } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
-  resolveScopedMemoryArtifactBase,
   type ScopedMemoryDatabase,
   type ScopedMemoryLifecycleState,
   withScopedMemoryDatabase,
 } from "./scoped-memory-db.js";
+import {
+  chunkBuiltinScopedMemoryContent,
+  hashScopedMemoryText,
+  removeBuiltinScopedMemoryArtifact,
+  writeBuiltinScopedMemoryArtifact,
+} from "./scoped-memory-resource-artifacts.js";
 import {
   createScopedMemorySourcePolicySetId,
   normalizeScopedMemoryRequiredText,
   type BuiltinScopedMemoryStore,
   type ScopedMemoryActor,
 } from "./scoped-memory-store.js";
-
-const OPAQUE_ARTIFACT_ATTEMPTS = 8;
-const OPAQUE_PATH_KEY_PATTERN = /^s1_[A-Za-z0-9_-]{24,}$/u;
-const OPAQUE_ARTIFACT_PATTERN = /^r1_[A-Za-z0-9_-]{18,}\.md$/u;
-const SCOPED_CHUNK_MAX_LINES = 40;
-const SCOPED_CHUNK_MAX_CHARS = 4_000;
 
 type BuiltinScopedMemoryResource = Readonly<{
   resourceId: string;
@@ -42,170 +39,6 @@ export type ScopedMemoryRevisionPolicyRequirementInput = Readonly<{
   expectedActiveRevisionId: string;
   expectedRevocationEpoch: number;
 }>;
-
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function createOpaqueArtifactLocator(): string {
-  return `r1_${randomBytes(18).toString("base64url")}.md`;
-}
-
-function assertOpaquePathKey(pathKey: string): void {
-  if (!OPAQUE_PATH_KEY_PATTERN.test(pathKey)) {
-    throw new Error("generated scoped-memory path key is invalid");
-  }
-}
-
-function assertOpaqueArtifactLocator(locator: string): void {
-  if (!OPAQUE_ARTIFACT_PATTERN.test(locator)) {
-    throw new Error("scoped-memory artifact locator is invalid");
-  }
-}
-
-function resolveChildPath(base: string, child: string): string {
-  const resolvedBase = path.resolve(base);
-  const resolved = path.resolve(resolvedBase, child);
-  if (path.dirname(resolved) !== resolvedBase || path.basename(resolved) !== child) {
-    throw new Error("scoped-memory locator escaped its storage root");
-  }
-  return resolved;
-}
-
-export function resolveBuiltinScopedMemoryArtifactPath(params: {
-  databasePath: string;
-  pathKey: string;
-  artifactLocator: string;
-}): string {
-  assertOpaquePathKey(params.pathKey);
-  assertOpaqueArtifactLocator(params.artifactLocator);
-  const storeDir = resolveChildPath(
-    resolveScopedMemoryArtifactBase(params.databasePath),
-    params.pathKey,
-  );
-  return resolveChildPath(storeDir, params.artifactLocator);
-}
-
-/**
- * Remove builtin artifacts only after their catalog revisions are durably tombstoned.
- * A missing file is a completed earlier cleanup; other failures leave the tombstone for retry.
- */
-export function removeTombstonedBuiltinScopedMemoryArtifacts(params: {
-  database: DatabaseSync;
-  databasePath: string;
-  agentId: string;
-  revisionIds: readonly string[];
-}): void {
-  const agentId = normalizeAgentId(params.agentId);
-  const revisionIds = [...new Set(params.revisionIds)].toSorted();
-  if (revisionIds.length === 0) {
-    return;
-  }
-  const db = getNodeSqliteKysely<ScopedMemoryDatabase>(params.database);
-  const rows = executeSqliteQuerySync(
-    params.database,
-    db
-      .selectFrom("memory_resource_revisions as revision")
-      .innerJoin("memory_resources as resource", "resource.resource_id", "revision.resource_id")
-      .innerJoin("memory_stores as store", "store.store_id", "resource.store_id")
-      .innerJoin("memory_storage_roots as root", "root.storage_root_id", "store.storage_root_id")
-      .select([
-        "revision.revision_id",
-        "revision.artifact_locator",
-        "revision.lifecycle_state",
-        "root.backend_kind",
-        "root.path_key",
-      ])
-      .where("revision.revision_id", "in", revisionIds)
-      .where("resource.agent_id", "=", agentId)
-      .orderBy("revision.revision_id"),
-  ).rows;
-  if (rows.length !== revisionIds.length) {
-    throw new Error("tombstoned scoped-memory artifact is unavailable");
-  }
-  for (const row of rows) {
-    if (row.lifecycle_state !== "tombstoned" || row.backend_kind !== "builtin" || !row.path_key) {
-      throw new Error("tombstoned scoped-memory artifact is unavailable");
-    }
-    const artifactPath = resolveBuiltinScopedMemoryArtifactPath({
-      databasePath: params.databasePath,
-      pathKey: row.path_key,
-      artifactLocator: row.artifact_locator,
-    });
-    try {
-      fs.unlinkSync(artifactPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-}
-
-function writeOpaqueArtifact(params: { databasePath: string; pathKey: string; content: string }): {
-  artifactLocator: string;
-  artifactPath: string;
-} {
-  for (let attempt = 0; attempt < OPAQUE_ARTIFACT_ATTEMPTS; attempt += 1) {
-    const artifactLocator = createOpaqueArtifactLocator();
-    const artifactPath = resolveBuiltinScopedMemoryArtifactPath({
-      databasePath: params.databasePath,
-      pathKey: params.pathKey,
-      artifactLocator,
-    });
-    try {
-      fs.writeFileSync(artifactPath, params.content, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      return { artifactLocator, artifactPath };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-    }
-  }
-  throw new Error("could not allocate an opaque scoped-memory artifact");
-}
-
-function removeArtifact(artifactPath: string): void {
-  try {
-    fs.unlinkSync(artifactPath);
-  } catch {}
-}
-
-function chunkMarkdown(content: string): Array<{
-  ordinal: number;
-  startLine: number;
-  endLine: number;
-  text: string;
-}> {
-  const lines = content.split(/\r?\n/u);
-  const chunks: Array<{ ordinal: number; startLine: number; endLine: number; text: string }> = [];
-  let start = 0;
-  while (start < lines.length) {
-    let end = start;
-    let chars = 0;
-    while (end < lines.length && end - start < SCOPED_CHUNK_MAX_LINES) {
-      const nextChars = chars + (lines[end]?.length ?? 0) + (end === start ? 0 : 1);
-      if (end > start && nextChars > SCOPED_CHUNK_MAX_CHARS) {
-        break;
-      }
-      chars = nextChars;
-      end += 1;
-    }
-    const text = lines.slice(start, end).join("\n");
-    chunks.push({
-      ordinal: chunks.length,
-      startLine: start + 1,
-      endLine: Math.max(start + 1, end),
-      text,
-    });
-    start = end;
-  }
-  return chunks;
-}
 
 function readActiveStoreRoot(params: {
   database: DatabaseSync;
@@ -266,7 +99,7 @@ function readActivePolicy(params: {
 }
 
 function normalizeRevisionPolicyRequirements(params: {
-  store: BuiltinScopedMemoryStore;
+  store: Pick<BuiltinScopedMemoryStore, "policyId" | "policyRevisionId" | "policyRevocationEpoch">;
   inherited: readonly ScopedMemoryRevisionPolicyRequirementInput[];
 }): ScopedMemoryRevisionPolicyRequirementInput[] {
   const requirements = new Map<string, ScopedMemoryRevisionPolicyRequirementInput>();
@@ -348,8 +181,8 @@ export function createBuiltinScopedMemoryResource(params: {
   const nowMs = params.nowMs ?? Date.now();
   const resourceId = randomUUID();
   const revisionId = randomUUID();
-  const contentHash = hashText(params.content);
-  const chunks = chunkMarkdown(params.content);
+  const contentHash = hashScopedMemoryText(params.content);
+  const chunks = chunkBuiltinScopedMemoryContent(params.content);
   const sourcePolicySetId = params.sourcePolicySetId
     ? normalizeScopedMemoryRequiredText(params.sourcePolicySetId, "sourcePolicySetId")
     : params.store.sourcePolicySetId;
@@ -367,7 +200,7 @@ export function createBuiltinScopedMemoryResource(params: {
       policyRevisionId: params.store.policyRevisionId,
       policyRevocationEpoch: params.store.policyRevocationEpoch,
     });
-    const artifact = writeOpaqueArtifact({
+    const artifact = writeBuiltinScopedMemoryArtifact({
       databasePath,
       pathKey: root.pathKey,
       content: params.content,
@@ -456,7 +289,7 @@ export function createBuiltinScopedMemoryResource(params: {
               start_line: chunk.startLine,
               end_line: chunk.endLine,
               text: chunk.text,
-              content_hash: hashText(chunk.text),
+              content_hash: hashScopedMemoryText(chunk.text),
               model: "builtin-markdown-v1",
               updated_at: nowMs,
             })),
@@ -494,7 +327,7 @@ export function createBuiltinScopedMemoryResource(params: {
         }
       });
     } catch (error) {
-      removeArtifact(artifact.artifactPath);
+      removeBuiltinScopedMemoryArtifact(artifact.artifactPath);
       throw error;
     }
     return Object.freeze({
@@ -575,8 +408,8 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
   const lifecycleState = params.lifecycleState ?? "pending";
   const nowMs = params.nowMs ?? Date.now();
   const revisionId = randomUUID();
-  const contentHash = hashText(params.content);
-  const chunks = chunkMarkdown(params.content);
+  const contentHash = hashScopedMemoryText(params.content);
+  const chunks = chunkBuiltinScopedMemoryContent(params.content);
 
   return withScopedMemoryDatabase(agentId, (database, databasePath) => {
     const initial = readActiveResourceStore({ database, agentId, resourceId });
@@ -587,7 +420,7 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
       policyRevisionId: initial.policyRevisionId,
       policyRevocationEpoch: initial.policyRevocationEpoch,
     });
-    const artifact = writeOpaqueArtifact({
+    const artifact = writeBuiltinScopedMemoryArtifact({
       databasePath,
       pathKey: initial.pathKey,
       content: params.content,
@@ -633,7 +466,36 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
         if (inheritedRequirements.length === 0) {
           throw new Error("scoped-memory resource lineage is unavailable");
         }
-        committedSourcePolicySetId = `mpset1_${hashText(previous.source_policy_set_id)}`;
+        const inheritedSourceRequirements = inheritedRequirements
+          .filter((requirement) => requirement.stable_policy_id !== current.policyId)
+          .map((requirement) => ({
+            stablePolicyId: requirement.stable_policy_id,
+            capturedRevisionId: requirement.captured_revision_id,
+            expectedActiveRevisionId: requirement.expected_active_revision_id,
+            expectedRevocationEpoch: requirement.expected_revocation_epoch,
+          }));
+        for (const requirement of inheritedSourceRequirements) {
+          readActivePolicy({
+            database,
+            agentId,
+            policyId: requirement.stablePolicyId,
+            policyRevisionId: requirement.expectedActiveRevisionId,
+            policyRevocationEpoch: requirement.expectedRevocationEpoch,
+          });
+        }
+        const policyRequirements = normalizeRevisionPolicyRequirements({
+          store: current,
+          inherited: inheritedSourceRequirements,
+        });
+        const sourcePolicySetIds = policyRequirements
+          .map((requirement) =>
+            createScopedMemorySourcePolicySetId(requirement.expectedActiveRevisionId),
+          )
+          .toSorted();
+        committedSourcePolicySetId =
+          sourcePolicySetIds.length === 1
+            ? sourcePolicySetIds[0]!
+            : `mpset1_${hashScopedMemoryText(sourcePolicySetIds.join("\0"))}`;
         if (lifecycleState === "active") {
           executeSqliteQuerySync(
             database,
@@ -668,12 +530,12 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
         executeSqliteQuerySync(
           database,
           db.insertInto("memory_revision_policy_requirements").values(
-            inheritedRequirements.map((requirement) => ({
+            policyRequirements.map((requirement) => ({
               revision_id: revisionId,
-              stable_policy_id: requirement.stable_policy_id,
-              captured_revision_id: requirement.captured_revision_id,
-              expected_active_revision_id: requirement.expected_active_revision_id,
-              expected_revocation_epoch: requirement.expected_revocation_epoch,
+              stable_policy_id: requirement.stablePolicyId,
+              captured_revision_id: requirement.capturedRevisionId,
+              expected_active_revision_id: requirement.expectedActiveRevisionId,
+              expected_revocation_epoch: requirement.expectedRevocationEpoch,
               created_at: nowMs,
             })),
           ),
@@ -714,7 +576,7 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
               start_line: chunk.startLine,
               end_line: chunk.endLine,
               text: chunk.text,
-              content_hash: hashText(chunk.text),
+              content_hash: hashScopedMemoryText(chunk.text),
               model: "builtin-markdown-v1",
               updated_at: nowMs,
             })),
@@ -752,7 +614,7 @@ export function createBuiltinScopedMemoryResourceRevision(params: {
         }
       });
     } catch (error) {
-      removeArtifact(artifact.artifactPath);
+      removeBuiltinScopedMemoryArtifact(artifact.artifactPath);
       throw error;
     }
     return Object.freeze({

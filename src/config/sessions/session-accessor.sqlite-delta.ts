@@ -17,11 +17,11 @@ import {
   resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 import {
   resolveSqliteSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
-import { readAuthorizedTranscriptEventSeqs } from "./session-transcript-memory-policy.js";
 
 const RAW_TRANSCRIPT_CURSOR_VERSION = 1;
 const ENFORCED_TRANSCRIPT_CURSOR_VERSION = 2;
