@@ -428,7 +428,7 @@ export interface SessionTranscriptRuntimeTarget {
 export type SessionTranscriptManualTrimResult =
   | {
       compacted: false;
-      reason: "no transcript";
+      reason: "memory-policy-enforced" | "no transcript";
     }
   | {
       compacted: false;

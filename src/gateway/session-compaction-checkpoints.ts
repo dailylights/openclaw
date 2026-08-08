@@ -8,11 +8,10 @@ import {
   SessionManager,
   type FileEntry as SessionFileEntry,
 } from "../agents/sessions/session-manager.js";
-import {
-  SESSION_TOTAL_TOKENS_VERSION,
-  type SessionCompactionCheckpoint,
-  type SessionCompactionCheckpointReason,
-  type SessionEntry,
+import type {
+  SessionCompactionCheckpoint,
+  SessionCompactionCheckpointReason,
+  SessionEntry,
 } from "../config/sessions.js";
 import { isCompactionCheckpointTranscriptFileName } from "../config/sessions/artifacts.js";
 import { readFileRangeAsync } from "../config/sessions/file-range.js";
@@ -450,14 +449,12 @@ function readSessionLeafStateFromRecords(
 
 function resolveCheckpointTranscriptForkSource(
   checkpoint: SessionCompactionCheckpoint,
-): { sourceFile: string; sourceLeafId?: string; totalTokens?: number } | null {
-  const checkpointTokensTrusted = checkpoint.tokensVersion === SESSION_TOTAL_TOKENS_VERSION;
+): { sourceFile: string; sourceLeafId?: string } | null {
   const preCompactionFile = checkpoint.preCompaction.sessionFile?.trim();
   if (preCompactionFile) {
     return {
       sourceFile: preCompactionFile,
       sourceLeafId: checkpoint.preCompaction.entryId ?? checkpoint.preCompaction.leafId,
-      totalTokens: checkpointTokensTrusted ? checkpoint.tokensBefore : undefined,
     };
   }
 
@@ -473,7 +470,6 @@ function resolveCheckpointTranscriptForkSource(
   return {
     sourceFile: postCompactionFile,
     sourceLeafId: postCompactionLeafId,
-    totalTokens: checkpointTokensTrusted ? checkpoint.tokensAfter : undefined,
   };
 }
 
@@ -485,7 +481,6 @@ async function prepareLegacyCheckpointSource(
       events: SessionFileEntry[];
       sessionFile: string;
       sourceLeafId?: string;
-      totalTokens?: number;
     }
   | undefined
 > {
@@ -513,7 +508,6 @@ async function prepareLegacyCheckpointSource(
     events,
     sessionFile: forkSource.sourceFile,
     ...(forkSource.sourceLeafId ? { sourceLeafId: forkSource.sourceLeafId } : {}),
-    ...(typeof forkSource.totalTokens === "number" ? { totalTokens: forkSource.totalTokens } : {}),
   };
 }
 

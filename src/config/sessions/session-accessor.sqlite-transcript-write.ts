@@ -178,14 +178,30 @@ export function replaceSqliteTranscriptEventsSync(
   return replaced;
 }
 
+/** Reports whether this transcript database has crossed the memory-policy cutover. */
+export function isSqliteTranscriptMemoryPolicyEnforced(
+  scope: SessionTranscriptAccessScope,
+): boolean {
+  const resolved = resolveSqliteTranscriptScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  return isTranscriptMemoryPolicyEnforcedInDatabase(database.db);
+}
+
 export async function trimSqliteTranscriptForManualCompact(
   scope: SessionTranscriptAccessScope,
   selectRetainedLines: (lines: readonly string[]) => readonly string[] | null,
   options: { nowMs?: number } = {},
-): Promise<{ trimmed: false } | { archivedPath: string; kept: number; trimmed: true }> {
+): Promise<
+  | { trimmed: false }
+  | { reason: "memory-policy-enforced"; trimmed: false }
+  | { archivedPath: string; kept: number; trimmed: true }
+> {
   const resolved = resolveSqliteTranscriptScope(scope);
   return await runExclusiveSqliteSessionWrite(resolved, async () => {
     const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+    if (isTranscriptMemoryPolicyEnforcedInDatabase(database.db)) {
+      return { reason: "memory-policy-enforced", trimmed: false };
+    }
     const snapshotRows = readSqliteTranscriptEventRows(database, resolved.sessionId);
     const sessionSnapshot = readSqliteSessionEntrySelectionSnapshot(
       database,

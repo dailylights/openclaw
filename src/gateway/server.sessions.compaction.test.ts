@@ -23,6 +23,8 @@ import {
   replaceSessionEntry,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { transcriptMemoryPolicyTesting } from "../config/sessions/session-transcript-memory-policy.test-support.js";
 import {
   enqueueCommandInLane,
   getCommandLaneSnapshot,
@@ -33,6 +35,7 @@ import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import {
   embeddedRunMock,
@@ -1706,6 +1709,70 @@ test("sessions.compact maxLines trims SQLite transcript rows and archives the fu
   // No active run present, so the interrupt guard short-circuits without aborting.
   expect(embeddedRunMock.abortCalls).toEqual([]);
   expect(embeddedRunMock.waitCalls).toEqual([]);
+
+  ws.close();
+});
+
+test("sessions.compact maxLines declines while memory policy enforcement is active without trimming rows", async () => {
+  const { dir, storePath } = await createSessionStoreDir();
+  const sessionId = "sess-manual-trim-policy-enforced";
+  await seedSessionEntry({
+    entry: sessionStoreEntry(sessionId),
+    sessionKey: "agent:main:main",
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId,
+    sessionKey: "agent:main:main",
+    storePath,
+    totalLines: 500,
+  });
+  const databasePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+    agentId: "main",
+  }).path;
+  if (!databasePath) {
+    throw new Error("expected manual compact database path");
+  }
+  const database = openOpenClawAgentDatabase({ agentId: "main", path: databasePath });
+  const readRawRows = () =>
+    database.db
+      .prepare(
+        `SELECT seq, event_json
+           FROM transcript_events
+          WHERE session_id = ?
+          ORDER BY seq ASC`,
+      )
+      .all(sessionId);
+  const originalRows = readRawRows();
+  database.db
+    .prepare(
+      `INSERT INTO memory_migrations
+        (migration_id, source_kind, source_hash, phase, classification_json, plan_hash,
+         verified_at, cutover_at, updated_at)
+       VALUES (?, ?, ?, 'cutover', '{}', ?, 1, 1, 1)`,
+    )
+    .run("manual-trim-cutover", "test", "manual-trim-source", "manual-trim-plan");
+  transcriptMemoryPolicyTesting.resetDatabase(database.db);
+
+  const { ws } = await openClient();
+  const compacted = await rpcReq<{
+    ok: boolean;
+    key: string;
+    compacted: boolean;
+    reason: string;
+  }>(ws, "sessions.compact", { key: "main", maxLines: 50 });
+
+  expect(compacted.ok).toBe(true);
+  expect(compacted.payload).toMatchObject({
+    ok: false,
+    key: "agent:main:main",
+    compacted: false,
+    reason:
+      "Manual transcript trimming is unavailable while memory policy enforcement is active. Retry without maxLines.",
+  });
+  expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+  expect(readRawRows()).toEqual(originalRows);
+  expect((await fs.readdir(dir)).some((name) => name.includes(".bak"))).toBe(false);
 
   ws.close();
 });

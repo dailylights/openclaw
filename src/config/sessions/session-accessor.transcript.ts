@@ -5,6 +5,7 @@ import {
   appendSqliteTranscriptMessage as appendTranscriptMessage,
   appendSqliteTranscriptMessageSync as appendTranscriptMessageSync,
   findSqliteTranscriptEvent,
+  isSqliteTranscriptMemoryPolicyEnforced,
   loadLatestSqliteAssistantText as readLatestTranscriptAssistantText,
   loadSqliteTranscriptEventRowsAfterSeqSync as loadTranscriptEventRowsAfterSeqSync,
   loadSqliteTranscriptEvents as loadTranscriptEvents,
@@ -91,6 +92,9 @@ export async function preflightSessionTranscriptForManualCompact(
   scope: SessionTranscriptRuntimeScope,
   params: { maxLines: number; sessionFile?: string },
 ): Promise<SessionTranscriptManualTrimPreflightResult> {
+  if (isSqliteTranscriptMemoryPolicyEnforced(scope)) {
+    return { compacted: false, reason: "memory-policy-enforced" };
+  }
   const events = await loadTranscriptEvents(scope).catch(() => []);
   if (events.length === 0) {
     return { compacted: false, reason: "no transcript" };
@@ -104,6 +108,9 @@ export async function trimSessionTranscriptForManualCompact(
   scope: SessionTranscriptRuntimeScope,
   params: { maxLines: number; nowMs?: number; sessionFile?: string },
 ): Promise<SessionTranscriptManualTrimResult> {
+  if (isSqliteTranscriptMemoryPolicyEnforced(scope)) {
+    return { compacted: false, reason: "memory-policy-enforced" };
+  }
   const maxLines = Math.max(1, Math.floor(params.maxLines));
   const maxTailLines = Math.max(0, maxLines - 1);
   let declined: SessionTranscriptManualTrimResult = { compacted: false, reason: "no transcript" };
@@ -132,6 +139,9 @@ export async function trimSessionTranscriptForManualCompact(
     params.nowMs === undefined ? {} : { nowMs: params.nowMs },
   );
   if (!trimmed.trimmed) {
+    if ("reason" in trimmed) {
+      return { compacted: false, reason: trimmed.reason };
+    }
     return declined;
   }
 

@@ -44,6 +44,9 @@ import {
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
+const MANUAL_TRANSCRIPT_TRIM_MEMORY_POLICY_ENFORCED_REASON =
+  "Manual transcript trimming is unavailable while memory policy enforcement is active. Retry without maxLines.";
+
 export const sessionCompactHandlers: GatewayRequestHandlers = {
   "sessions.compact": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateSessionsCompactParams, "sessions.compact", respond)) {
@@ -124,6 +127,19 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         },
         { maxLines },
       );
+      if ("reason" in trimPreflight && trimPreflight.reason === "memory-policy-enforced") {
+        respond(
+          true,
+          {
+            ok: false,
+            key: target.canonicalKey,
+            compacted: false,
+            reason: MANUAL_TRANSCRIPT_TRIM_MEMORY_POLICY_ENFORCED_REASON,
+          },
+          undefined,
+        );
+        return;
+      }
       if (!trimPreflight.compacted) {
         respond(
           true,
@@ -310,6 +326,19 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               },
               { maxLines },
             );
+            if ("reason" in trimResult && trimResult.reason === "memory-policy-enforced") {
+              respond(
+                true,
+                {
+                  ok: false,
+                  key: target.canonicalKey,
+                  compacted: false,
+                  reason: MANUAL_TRANSCRIPT_TRIM_MEMORY_POLICY_ENFORCED_REASON,
+                },
+                undefined,
+              );
+              return;
+            }
             respond(
               true,
               {

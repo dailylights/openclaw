@@ -66,6 +66,7 @@ export {
   appendSqliteTranscriptEventSync,
   appendSqliteTranscriptMessage,
   appendSqliteTranscriptMessageSync,
+  isSqliteTranscriptMemoryPolicyEnforced,
   replaceSqliteTranscriptEvents,
   replaceSqliteTranscriptEventsSync,
   rewriteSqliteTranscriptEventRowsExact,

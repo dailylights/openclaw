@@ -285,8 +285,11 @@ openclaw sessions compact "agent:work:main" --agent work --json
 - Without `--max-lines`, the Gateway LLM-summarizes the transcript. The CLI
   does not impose a client deadline by default; the Gateway owns the
   configured compaction lifecycle.
-- With `--max-lines <n>`, it truncates to the last `n` transcript lines and
-  archives the prior transcript as a `.bak` sidecar.
+- With `--max-lines <n>`, legacy transcripts truncate to the last `n` lines and
+  archive the prior transcript as a `.bak` sidecar. Transcripts with memory
+  policy enforcement reject manual trimming without rewriting or archiving
+  anything; rerun the command without `--max-lines` to use authorized LLM
+  summarization.
 - `--agent <id>`: agent that owns the session; required for `global` keys.
 - `--url` / `--token` / `--password`: Gateway connection overrides.
 - `--timeout <ms>`: optional client-side RPC timeout in milliseconds.
@@ -306,11 +309,11 @@ no-opping.
 
 `openclaw gateway call sessions.compact --params '<json>'` accepts:
 
-| Field      | Type        | Required | Description                                                |
-| ---------- | ----------- | -------- | ---------------------------------------------------------- |
-| `key`      | string      | yes      | Session key to compact (for example `agent:main:main`).    |
-| `agentId`  | string      | no       | Agent id that owns the session (for `global` keys).        |
-| `maxLines` | integer ≥ 1 | no       | Truncate to the last N lines instead of LLM summarization. |
+| Field      | Type        | Required | Description                                                                                                      |
+| ---------- | ----------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `key`      | string      | yes      | Session key to compact (for example `agent:main:main`).                                                          |
+| `agentId`  | string      | no       | Agent id that owns the session (for `global` keys).                                                              |
+| `maxLines` | integer ≥ 1 | no       | Truncate to the last N lines instead of LLM summarization. Unavailable when memory policy enforcement is active. |
 
 Example LLM-summarize response:
 
@@ -323,7 +326,7 @@ Example LLM-summarize response:
 }
 ```
 
-Example truncate response (`--max-lines 200`):
+Example legacy-mode truncate response (`--max-lines 200`):
 
 ```json
 {

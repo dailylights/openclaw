@@ -22,6 +22,7 @@ import {
   toDatabaseOptions,
   type ResolvedSqliteScope,
 } from "./session-accessor.sqlite-scope.js";
+import { readTranscriptEventIdentity } from "./session-accessor.sqlite-transcript-events.js";
 import {
   appendTranscriptEventsInTransaction,
   readTranscriptIdentityByEventId,
@@ -51,7 +52,6 @@ type SqliteCompactionCheckpointLegacySource = {
   events: TranscriptEvent[];
   sessionFile: string;
   sourceLeafId?: string;
-  totalTokens?: number;
 };
 
 /** Result from SQLite compaction checkpoint branch or restore operations. */
@@ -308,12 +308,19 @@ function forkSqliteCheckpointTranscriptInTransaction(
     | {
         source: SqliteCheckpointTranscriptForkSource;
         rows: TranscriptEvent[];
+        copiedEverySourceRow: boolean;
+        hasSourceBoundPolicyLineage: boolean;
       }
     | undefined;
   for (const source of sources) {
     const rows = readSqliteTranscriptRowsForFork(database, source);
     if (rows.status === "created") {
-      selected = { source, rows: rows.events };
+      selected = {
+        source,
+        rows: rows.events,
+        copiedEverySourceRow: rows.copiedEverySourceRow,
+        hasSourceBoundPolicyLineage: rows.hasSourceBoundPolicyLineage,
+      };
       break;
     }
     lastFailure = rows;
@@ -333,33 +340,36 @@ function forkSqliteCheckpointTranscriptInTransaction(
   };
   const sessionFile = formatSqliteSessionReferenceForScope(targetScope);
   const selectedEvents = selected?.rows ?? legacySource?.events ?? [];
-  const totalTokens = selected?.source.totalTokens ?? legacySource?.totalTokens;
-  appendTranscriptEventsInTransaction(
-    database,
-    targetScope,
-    [
-      createSessionTranscriptHeader({
-        cwd: readTranscriptHeaderCwd(selectedEvents),
-        sessionId,
-      }),
-      ...selectedEvents.filter((event) => !isSessionTranscriptHeader(event)),
-    ],
-    {
-      ...(selected
-        ? {
-            memoryPolicySource: {
-              sessionId: selected.source.sessionId,
-              transitionKind: "checkpoint" as const,
-            },
-          }
-        : {
-            // Legacy checkpoint bytes have no companion-row mapping. They
-            // remain pending rather than inheriting the current run policy.
-            forceMemoryPolicyPending: true,
-          }),
-      memorySubjectSeed: params.memorySubjectSeed,
-    },
-  );
+  const eventsToAppend = [
+    createSessionTranscriptHeader({
+      cwd: readTranscriptHeaderCwd(selectedEvents),
+      sessionId,
+    }),
+    ...selectedEvents.filter((event) => !isSessionTranscriptHeader(event)),
+  ];
+  const appended = appendTranscriptEventsInTransaction(database, targetScope, eventsToAppend, {
+    ...(selected
+      ? {
+          memoryPolicySource: {
+            sessionId: selected.source.sessionId,
+            transitionKind: "checkpoint" as const,
+          },
+        }
+      : {
+          // Legacy checkpoint bytes have no companion-row mapping. They
+          // remain pending rather than inheriting the current run policy.
+          forceMemoryPolicyPending: true,
+        }),
+    memorySubjectSeed: params.memorySubjectSeed,
+  });
+  // Checkpoint totals are provenance facts, not estimates. A replay carries
+  // one forward only after every content row has an exact source-policy binding.
+  const totalTokens =
+    selected?.copiedEverySourceRow &&
+    selected.hasSourceBoundPolicyLineage &&
+    appended === eventsToAppend.length
+      ? selected.source.totalTokens
+      : undefined;
   return {
     status: "created",
     sessionId,
@@ -416,7 +426,14 @@ function resolveSqliteCheckpointTranscriptForkSources(
 function readSqliteTranscriptRowsForFork(
   database: OpenClawAgentDatabase,
   source: { sessionId: string; leafId?: string },
-): { status: "created"; events: TranscriptEvent[] } | { status: "missing-boundary" | "failed" } {
+):
+  | {
+      status: "created";
+      events: TranscriptEvent[];
+      copiedEverySourceRow: boolean;
+      hasSourceBoundPolicyLineage: boolean;
+    }
+  | { status: "missing-boundary" | "failed" } {
   const boundarySeq = source.leafId
     ? readTranscriptIdentityByEventId(database, source.sessionId, source.leafId)?.seq
     : undefined;
@@ -440,9 +457,25 @@ function readSqliteTranscriptRowsForFork(
     return { status: "failed" };
   }
   try {
+    const events = readableRows.map((row) => JSON.parse(row.event_json) as TranscriptEvent);
     return {
       status: "created",
-      events: readableRows.map((row) => JSON.parse(row.event_json) as TranscriptEvent),
+      events,
+      copiedEverySourceRow: readableRows.length === rows.length,
+      hasSourceBoundPolicyLineage:
+        authorizedSeqs === undefined ||
+        readableRows.every((row, index) => {
+          const event = events[index];
+          if (isSessionTranscriptHeader(event)) {
+            return true;
+          }
+          const identity = readTranscriptEventIdentity(event);
+          return (
+            identity !== undefined &&
+            readTranscriptIdentityByEventId(database, source.sessionId, identity.eventId)?.seq ===
+              row.seq
+          );
+        }),
     };
   } catch {
     return { status: "failed" };

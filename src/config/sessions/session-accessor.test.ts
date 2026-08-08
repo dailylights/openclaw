@@ -42,6 +42,7 @@ import {
   openSessionEntryReadView,
   patchSessionEntry,
   patchSessionEntryTarget,
+  preflightSessionTranscriptForManualCompact,
   persistSessionTranscriptTurn,
   readTranscriptStatsSync,
   readSessionUpdatedAt,
@@ -75,6 +76,7 @@ import {
   trimSqliteTranscriptForManualCompact,
 } from "./session-accessor.sqlite.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import { transcriptMemoryPolicyTesting } from "./session-transcript-memory-policy.test-support.js";
 import { withOwnedSessionTranscriptWrites } from "./transcript-write-context.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
@@ -2239,6 +2241,79 @@ describe("session accessor seam", () => {
     expect(updatedEntry?.totalTokens).toBeUndefined();
     expect(updatedEntry?.totalTokensFresh).toBeUndefined();
     expect(updates).toEqual([]);
+  });
+
+  it("declines manual transcript trimming after memory-policy cutover without rewriting rows", async () => {
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const scope = {
+      agentId: "main",
+      sessionId,
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const records = createManualCompactRecords(sessionId);
+    await upsertSessionEntry(scope, {
+      inputTokens: 10,
+      outputTokens: 20,
+      sessionId,
+      totalTokens: 30,
+      totalTokensFresh: true,
+      updatedAt: 100,
+    });
+    await replaceSqliteTranscriptEvents(
+      scope,
+      records as Parameters<typeof replaceSqliteTranscriptEvents>[1],
+    );
+    const databasePath = expectDefined(
+      resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" }).path,
+      "manual compact database path",
+    );
+    const database = openOpenClawAgentDatabase({ agentId: "main", path: databasePath });
+    const readRawRows = () =>
+      database.db
+        .prepare(
+          `SELECT seq, event_json
+             FROM transcript_events
+            WHERE session_id = ?
+            ORDER BY seq ASC`,
+        )
+        .all(sessionId);
+    const rowsBefore = readRawRows();
+    const entryBefore = structuredClone(loadSessionEntry(scope));
+    database.db
+      .prepare(
+        `INSERT INTO memory_migrations
+          (migration_id, source_kind, source_hash, phase, classification_json, plan_hash,
+           verified_at, cutover_at, updated_at)
+         VALUES (?, ?, ?, 'cutover', '{}', ?, 1, 1, 1)`,
+      )
+      .run("manual-trim-cutover", "test", "manual-trim-source", "manual-trim-plan");
+    transcriptMemoryPolicyTesting.resetDatabase(database.db);
+
+    await expect(
+      preflightSessionTranscriptForManualCompact(scope, { maxLines: 3 }),
+    ).resolves.toEqual({
+      compacted: false,
+      reason: "memory-policy-enforced",
+    });
+    await expect(trimSessionTranscriptForManualCompact(scope, { maxLines: 3 })).resolves.toEqual({
+      compacted: false,
+      reason: "memory-policy-enforced",
+    });
+    const selectRetainedLines = vi.fn(() =>
+      records.slice(-3).map((record) => JSON.stringify(record)),
+    );
+    await expect(trimSqliteTranscriptForManualCompact(scope, selectRetainedLines)).resolves.toEqual(
+      {
+        reason: "memory-policy-enforced",
+        trimmed: false,
+      },
+    );
+
+    expect(selectRetainedLines).not.toHaveBeenCalled();
+    expect(readRawRows()).toEqual(rowsBefore);
+    expect(loadSessionEntry(scope)).toEqual(entryBefore);
+    expect(fs.readdirSync(tempDir).some((name) => name.includes(".bak"))).toBe(false);
   });
 
   it("keeps every transcript row when the manual compact backup cannot be written", async () => {
