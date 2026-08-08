@@ -159,14 +159,11 @@ export async function normalizeEmbeddedRunAttempt(input: {
           ]),
         )
       : input.bootstrapPromptWarningSignaturesSeen);
-  const lastAssistantUsage = normalizeAssistantUsageForContext(sessionLastAssistant);
-  const currentAttemptAssistantUsage = normalizeAssistantUsageForContext(currentAttemptAssistant);
+  const attemptAssistantUsage = normalizeAssistantUsageForContext(attemptAssistant);
   const promptCacheLastCallUsage = normalizeUsage(attempt.promptCache?.lastCallUsage as UsageLike);
   const callUsage = resolveLatestCallUsage({
-    currentAttemptCandidates: [currentAttemptAssistantUsage, promptCacheLastCallUsage],
-    // The latest assistant sentinel must invalidate stale carried usage; reversing this order
-    // would resurrect a prior exact value after the runtime reports context as unavailable.
-    carriedCandidates: [lastAssistantUsage, input.lastRunPromptUsage],
+    currentAttemptCandidates: [attemptAssistantUsage, promptCacheLastCallUsage],
+    carriedCandidates: [input.lastRunPromptUsage],
   });
   const attemptUsage = attempt.attemptUsage ?? callUsage.currentAttempt;
   mergeUsageIntoAccumulator(input.usageAccumulator, attemptUsage);
