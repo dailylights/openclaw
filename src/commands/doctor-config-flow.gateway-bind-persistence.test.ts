@@ -7,8 +7,10 @@ import { runInitialConfigWriteHealth } from "../flows/doctor-health-contribution
 import type { DoctorHealthFlowContext } from "../flows/doctor-health-contribution-types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { loadAndMaybeMigrateDoctorConfig } from "./doctor-config-flow.js";
+import { runDoctorConfigPreflight } from "./doctor-config-preflight.js";
 import { createDoctorPrompter, type DoctorOptions } from "./doctor-prompter.js";
+import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
+import { applyLegacyCompatibilityStep } from "./doctor/shared/config-flow-steps.js";
 
 describe("Doctor gateway bind persistence", () => {
   afterEach(() => {
@@ -30,12 +32,33 @@ describe("Doctor gateway bind persistence", () => {
       };
       const options: DoctorOptions = { nonInteractive: true, repair: true };
       const prompter = createDoctorPrompter({ runtime, options });
-      const configResult = await loadAndMaybeMigrateDoctorConfig({
-        options,
-        confirm: (params) => prompter.confirm(params),
-        runtime,
-        prompter,
+      const preflight = await runDoctorConfigPreflight({
+        migrateState: false,
+        preparePluginMetadataSnapshot: false,
       });
+      const legacyStep = applyLegacyCompatibilityStep({
+        snapshot: preflight.snapshot,
+        state: {
+          cfg: preflight.baseConfig,
+          candidate: structuredClone(preflight.baseConfig),
+          pendingChanges: false,
+          fixHints: [],
+        },
+        shouldRepair: true,
+        doctorFixCommand: "openclaw doctor --fix",
+      });
+      const finalized = await finalizeDoctorConfigFlow({
+        ...legacyStep.state,
+        shouldRepair: true,
+        confirm: (params) => prompter.confirm(params),
+        note: vi.fn(),
+      });
+      const configResult: DoctorHealthFlowContext["configResult"] = {
+        cfg: finalized.cfg,
+        path: configPath,
+        shouldWriteConfig: finalized.shouldWriteConfig,
+        sourceConfigValid: preflight.snapshot.valid,
+      };
       const ctx: DoctorHealthFlowContext = {
         runtime,
         options,
@@ -43,15 +66,9 @@ describe("Doctor gateway bind persistence", () => {
         configResult,
         cfg: configResult.cfg,
         cfgForPersistence: structuredClone(configResult.cfg),
-        sourceConfigValid: configResult.sourceConfigValid ?? true,
+        sourceConfigValid: configResult.sourceConfigValid ?? false,
         configPath,
         stateDirExistedAtStart: true,
-        ...(configResult.runWithPluginMetadataSnapshot
-          ? { runWithPluginMetadataSnapshot: configResult.runWithPluginMetadataSnapshot }
-          : {}),
-        ...(configResult.invalidatePluginMetadataSnapshot
-          ? { invalidatePluginMetadataSnapshot: configResult.invalidatePluginMetadataSnapshot }
-          : {}),
       };
 
       await runInitialConfigWriteHealth(ctx);
