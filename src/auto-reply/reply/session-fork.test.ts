@@ -331,8 +331,7 @@ describe("forkSessionEntryFromParent", () => {
     const parentEntry = {
       sessionId: "parent-session",
       totalTokens: 4_567,
-      totalTokensFresh: true,
-      totalTokensVersion: 1 as const,
+      totalTokensFresh: false,
       updatedAt: 1,
     };
     await replaceSqliteTranscriptEvents(
