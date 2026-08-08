@@ -223,7 +223,7 @@ openclaw-workboard-card-chip {
   writing-mode: horizontal-tb;
 }
 
-@media (max-width: 560px) {
+@container (max-width: 560px) {
   .chat-pane__face-switch .settings-segmented__btn {
     padding-inline: 7px;
   }
