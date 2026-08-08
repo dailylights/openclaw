@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { listGitTrackedFiles } from "../test-utils/repo-files.js";
 import {
@@ -78,6 +79,37 @@ function isProductionTypeScript(file: string): boolean {
   );
 }
 
+function callsContextFreeMemoryManager(file: string): boolean {
+  const source = ts.createSourceFile(
+    file,
+    fs.readFileSync(path.join(REPO_ROOT, file), "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) {
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      if (
+        (ts.isIdentifier(expression) &&
+          (expression.text === "getActiveMemorySearchManager" ||
+            expression.text === "getMemorySearchManager")) ||
+        (ts.isPropertyAccessExpression(expression) &&
+          expression.name.text === "getMemorySearchManager")
+      ) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(source, visit);
+  return found;
+}
+
 describe("memory authorization path inventory", () => {
   const inventory: readonly MemoryAuthorizationPathInventoryEntry[] =
     MEMORY_AUTHORIZATION_PATH_INVENTORY;
@@ -119,11 +151,9 @@ describe("memory authorization path inventory", () => {
         repoRoot: REPO_ROOT,
         pathspecs: ["src", "extensions", "packages"],
       }) ?? [];
-    const callPattern =
-      /\bgetActiveMemorySearchManager\s*\(|\bgetMemorySearchManager\s*\(|\.getMemorySearchManager\s*\(/u;
     const directCallSurfaces = tracked
       .filter(isProductionTypeScript)
-      .filter((file) => callPattern.test(fs.readFileSync(path.join(REPO_ROOT, file), "utf8")));
+      .filter(callsContextFreeMemoryManager);
     const inventoriedSurfaces = new Set<string>(inventory.flatMap((entry) => entry.surfaces));
 
     expect(directCallSurfaces.filter((surface) => !inventoriedSurfaces.has(surface))).toEqual([]);
